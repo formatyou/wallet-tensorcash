@@ -1,0 +1,41 @@
+name: tensorcash-wallet-regtest
+services:
+  core:
+    image: ${TENSORCASH_REGTEST_IMAGE:-tensorcash-local/core:v1.2.2}
+    container_name: tensorcash-wallet-regtest
+    network_mode: host
+    command:
+      - -datadir=/data
+      - -regtest
+      - -server=1
+      - -rpcport=19453
+      - -rpcbind=127.0.0.1
+      - -rpcallowip=127.0.0.1
+      - -listen=0
+      - -listenonion=0
+      - -discover=0
+      - -networkactive=0
+      - -useextapi=0
+      - -validationapi=mock
+      - -mockval-force-external=1
+      - -mockval-default-quick=quick_ok_smell_ok
+      - -mockval-default-full=full_green
+      - -mockval-default-model=model_ok
+      - -maxtipage=999999
+      - -par=1
+      - -daemon=0
+      - -printtoconsole=1
+      - -nodebuglogfile
+    volumes:
+      - ../.runtime/regtest:/data
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 2
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options: { max-size: 5m, max-file: '2' }

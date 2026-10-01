@@ -1,0 +1,38 @@
+[Unit]
+Description=TensorCash browser wallet gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tensorwallet
+Group=tensorwallet
+WorkingDirectory=/opt/tensorcash-wallet/current
+EnvironmentFile=/etc/tensorcash-wallet.env
+Environment=CORE_COOKIE_FILE=%d/core.cookie
+Environment=NODE_ENV=production
+Environment=TSX_DISABLE_CACHE=1
+ExecStart=/usr/bin/node --import tsx server/index.ts
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=512M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

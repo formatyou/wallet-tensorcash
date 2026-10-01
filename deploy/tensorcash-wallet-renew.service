@@ -1,0 +1,7 @@
+[Unit]
+Description=Renew TensorCash wallet HTTPS certificate
+After=network-online.target nginx.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/certbot renew --cert-name tensorcash-wallet --quiet --deploy-hook "/usr/bin/systemctl reload nginx.service"

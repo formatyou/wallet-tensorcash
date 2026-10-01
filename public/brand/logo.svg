@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="TensorCash">
+  <circle cx="512" cy="510" r="425" fill="#731D30"/>
+  <rect x="489" y="180" width="42" height="42" fill="#F7F8F9"/>
+  <rect x="489" y="800" width="42" height="42" fill="#F7F8F9"/>
+  <path fill="#F7F8F9" d="
+    M 289 269
+    L 732 269
+    L 732 384
+    L 683 384
+    C 660 380 650 365 650 337
+    L 565 336
+    L 565 686
+    C 595 690 615 705 621 711
+    L 621 756
+    L 402 756
+    L 402 711
+    C 408 705 428 690 459 686
+    L 459 336
+    L 374 336
+    C 374 365 363 380 340 384
+    L 289 384
+    Z"/>
+</svg>
