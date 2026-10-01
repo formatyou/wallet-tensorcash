@@ -42,7 +42,7 @@ for (const [name, browserType] of Object.entries({ chromium, firefox, webkit }))
     expect(response?.headers()['content-security-policy']).toContain("script-src 'self'");
     expect(response?.headers()['strict-transport-security']).toContain('max-age=31536000');
     expect(await page.evaluate(() => isSecureContext && !!crypto.subtle)).toBe(true);
-    await expect(page.getByRole('heading', { name: 'Your wallet, on this device.' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'A simple home for your TensorCash.', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: /^Create a wallet/ })).toBeVisible();
     const widths: number[] = [];
     for (const width of [1440, 390, 320]) {
