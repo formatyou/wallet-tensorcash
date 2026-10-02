@@ -11,7 +11,7 @@ import { Gateway } from './gateway';
 import { GatewayError } from './errors';
 import { publicMetadata, snapshotSources, verifyManifest, type BuildMetadata } from './build';
 
-const rawBody = z.object({ rawHex: z.string().min(20).max(800000).regex(/^(?:[0-9a-fA-F]{2})+$/) }).strict();
+const rawBody = z.object({ rawHex: z.string().min(20).max(400_000).regex(/^(?:[0-9a-fA-F]{2})+$/).transform(v => v.toLowerCase()) }).strict();
 const syncBody = z.object({ addresses: z.array(z.string().min(14).max(100).regex(/^[a-z0-9]+$/)).min(1).max(100) }).strict().refine(v => new Set(v.addresses).size === v.addresses.length);
 const txParams = z.object({ txid: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
 const rawQuery = z.object({ blockHash: z.string().regex(/^[0-9a-f]{64}$/).optional() }).strict();
@@ -71,15 +71,15 @@ export async function buildApp(input: GatewayConfig): Promise<FastifyInstance> {
   const parse = <T>(schema: z.ZodType<T>, value: unknown): T => { const result = schema.safeParse(value); if (!result.success) throw new GatewayError('invalid-request', 'Invalid request', 400); return result.data; };
   app.get('/api/build', async (_request, reply) => reply.header('Cache-Control', 'no-store').send(build));
   app.get('/api/v1/network', async () => gateway.network());
-  app.post('/api/v1/wallet/sync', { config: { rateLimit: { max: config.syncRateLimit ?? 60, timeWindow: '1 minute' } } }, async request => gateway.sync(parse(syncBody, request.body).addresses));
+  app.post('/api/v1/wallet/sync', { bodyLimit: 16_384, config: { rateLimit: { max: config.syncRateLimit ?? 60, timeWindow: '1 minute' } } }, async request => gateway.sync(parse(syncBody, request.body).addresses));
   app.get('/api/v1/tx/:txid/raw', { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async request => {
     const { txid } = parse(txParams, request.params); const { blockHash } = parse(rawQuery, request.query);
     const network = await gateway.network(); if (!network.ready) throw new GatewayError('network-not-ready', 'Chain data is not synchronized or fresh');
     return { txid, rawHex: await gateway.raw(txid, blockHash) };
   });
   app.get('/api/v1/fees', async () => gateway.fees());
-  app.post('/api/v1/tx/validate', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async request => gateway.validate(parse(rawBody, request.body).rawHex));
-  app.post('/api/v1/tx/broadcast', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async request => gateway.broadcast(parse(rawBody, request.body).rawHex));
+  app.post('/api/v1/tx/validate', { bodyLimit: 420_000, config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async request => gateway.validate(parse(rawBody, request.body).rawHex));
+  app.post('/api/v1/tx/broadcast', { bodyLimit: 420_000, config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async request => gateway.broadcast(parse(rawBody, request.body).rawHex));
   app.get('/health', async (_request, reply) => {
     const network = await gateway.network(); return reply.code(network.ready ? 200 : 503).send({ ok: network.ready, network: network.network, height: network.height, observedAt: network.observedAt });
   });

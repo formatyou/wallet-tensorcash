@@ -344,23 +344,58 @@ for (const issue of ['authentication', 'synchronizing'] as const) {
     const mocked = await mockRegtest(page);
     mocked.setNetworkIssue(issue);
     await page.goto('/');
+    const create = page.getByRole('button', { name: /^Create a wallet/ });
+    const badge = page.locator('.network-badge');
     if (issue === 'authentication') {
       await expect(page.getByRole('alert')).toContainText('Core authentication is unavailable');
+      await expect(create).toBeDisabled();
     } else {
-      await expect(page.locator('.network-update')).toHaveAttribute('role', 'status');
-      await expect(page.locator('.network-update')).toContainText('Updating wallet data');
+      await expect(badge).toHaveText('Regtest');
+      await expect(badge).toHaveClass(/network-waiting/);
+      await expect(page.locator('.network-update')).toHaveCount(0);
       await expect(page.getByRole('alert')).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Retry connection', exact: true })).not.toBeVisible();
+      await expect(create).toBeEnabled();
     }
-    const create = page.getByRole('button', { name: /^Create a wallet/ });
-    await expect(create).toBeDisabled();
     mocked.setNetworkIssue(null);
-    await expect(create).toBeEnabled({ timeout: 35_000 });
+    await expect(badge).not.toHaveClass(/network-waiting/, { timeout: 35_000 });
+    await expect(create).toBeEnabled();
     await expect(page.getByRole('alert')).toHaveCount(0);
     await expect(page.locator('.network-update')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Retry connection', exact: true })).not.toBeVisible();
   });
 }
+test('a wallet can be created while the network view is still updating', async ({ page }) => {
+  const mocked = await mockRegtest(page);
+  mocked.setNetworkIssue('synchronizing');
+  await page.goto('/');
+  await expect(page.locator('.network-badge')).toHaveText('Regtest');
+  await expect(page.locator('.network-badge')).toHaveClass(/network-waiting/);
+  await expect(page.locator('.network-update')).toHaveCount(0);
+  await page.getByRole('button', { name: /^Create a wallet/ }).click();
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await page.locator('input[name="confirmPassword"]').fill(PASSWORD);
+  await page.getByRole('button', { name: 'Create & back up wallet' }).click();
+  await expect(page.getByRole('heading', { name: 'Write down these 12 words' })).toBeVisible();
+  const words = await page.locator('.seed-grid li').evaluateAll(nodes => nodes.map(node => node.lastChild?.textContent ?? ''));
+  expect(words).toHaveLength(12);
+  await expect(page.locator('.network-update')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.getByRole('button', { name: 'I have written down all 12 words' }).click();
+  for (const index of [2, 5, 9]) await page.locator(`input[name="word${index}"]`).fill(words[index]);
+  await page.getByRole('button', { name: 'Confirm backup & open wallet' }).click();
+  await expect(page.getByRole('heading', { name: 'Keep it simple.' })).toBeVisible();
+  await expect(page.locator('.network-update')).toContainText('Updating wallet data');
+  await expect(page.getByTestId('wallet-sync')).toHaveText('Updating');
+  await expect(page.getByTestId('balance-total')).toHaveText('—TSC');
+  await expect(page.locator('.balance-actions').getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(mocked.requests.some(body => body.includes('addresses'))).toBe(false);
+  mocked.setNetworkIssue(null);
+  await expect(page.getByTestId('wallet-sync')).toHaveAttribute('data-sync-state', 'idle', { timeout: 35_000 });
+  await expect(page.locator('.network-update')).toHaveCount(0);
+  await expect(page.getByTestId('balance-total')).toHaveText('0TSC');
+});
 test('connection recovery preserves an existing locked vault and its password error', async ({ page }) => {
   const mocked = await mockRegtest(page);
   await restorePhrase(page);

@@ -308,7 +308,7 @@ describe('authoritative Core mempool overlay', () => {
     const rows = options.emptyIndex ? [] : [fundingRow];
     if (options.indexedPending) rows.push({ txid: tx.txid, block_height: null as unknown as number, block_hash: null as unknown as string, delta_sats: -100200, fee_sats: 200, timestamp: now() - 1 });
     const fetch = explorerFetch({ [`/api/address/${mainAddress}`]: indexed(rows), [`/api/address/${changeAddress}`]: indexed([]), [`/api/tx/${PARENT.txid}`]: fundingDetail });
-    return { tx, rpc, create: () => create(rpc, { network: 'mainnet', fetch, ...(options.limit ? { maxHistoryTransactions: options.limit } : {}) }) };
+    return { tx, rpc, create: () => create(rpc, { network: 'mainnet', fetch, ...(options.limit ? { maxMempoolTransactions: options.limit } : {}) }) };
   }
   it('shows outgoing history and unconfirmed change while the explorer omits the spend entirely', async () => {
     const raw = rawOutputs(PARENT.txid, [{ amount: 100000, scriptHex: OTHER_SCRIPT }, { amount: 299800, scriptHex: changeScript }]); const f = setup(raw); const app = await f.create();

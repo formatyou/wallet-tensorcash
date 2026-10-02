@@ -34,10 +34,14 @@ available. The global fingerprint can require retries during unrelated activity.
 History pages/transactions and watched addresses have explicit caps; hitting
 history limits never claims completeness. Core mempool membership is reread on
 every sync. Its immutable verbose/raw transactions are shared across concurrent
-requests with a cache capped at the history transaction limit and 16 million hex
-characters; ordinary raw cache is separately capped at 256 entries/16 million
-hex characters. Each mempool scan has the same byte cap, 100000 graph edges and
-bounded concurrency of four. Relevant pending prevout resolution is capped by
+requests with a least-recently-used cache capped at the mempool transaction
+limit (default 5000, hard bound 100000) and the mempool hex limit (default 16
+million characters, hard bound 64 million); ordinary raw cache is separately
+capped at 256 entries/16 million hex characters. Each mempool scan has the same
+transaction and hex caps, a graph edge limit (default 20 per allowed mempool
+transaction, hard bound 2 million) and bounded concurrency of four. The mempool
+caps are independent of `WALLET_MAX_HISTORY_TRANSACTIONS`; a larger Core mempool
+makes every sync incomplete. Relevant pending prevout resolution is capped by
 the history transaction limit. Missing data or a cap returns `complete: false`,
 never a complete zero pending balance. Unsupported unrelated Tensor traffic is
 filtered by Core-decoded scripts/outpoints before the strict native checks.
@@ -126,7 +130,8 @@ Environment: `WALLET_NETWORK`, `WALLET_HOST`, `WALLET_PORT`,
 `WALLET_GENESIS_HASH`, `WALLET_MAX_TIP_AGE`, `WALLET_MIN_CONFIRMATIONS`,
 `WALLET_MAX_FEE_UNITS`, `WALLET_MAX_FEE_RATE`, `WALLET_RPC_TIMEOUT_MS`,
 `WALLET_MAX_HISTORY_PAGES`, `WALLET_MAX_HISTORY_TRANSACTIONS`,
-`WALLET_MAX_WATCHED_ADDRESSES`, `WALLET_WATCH_WALLET`,
+`WALLET_MAX_MEMPOOL_TRANSACTIONS`, `WALLET_MAX_MEMPOOL_HEX_CHARACTERS`,
+`WALLET_MAX_MEMPOOL_EDGES`, `WALLET_MAX_WATCHED_ADDRESSES`, `WALLET_WATCH_WALLET`,
 `WALLET_ALLOW_WATCH_CREATION=true` (isolated regtest only).
 Node's `--env-file` may load a protected server env file; no dotenv dependency.
 Normal cookie files must be private (0400 or 0600). `LoadCredential` may produce

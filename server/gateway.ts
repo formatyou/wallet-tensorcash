@@ -196,7 +196,9 @@ export class Gateway {
     try { return await pending; } finally { this.nativeFlights.delete(txid); }
   }
   private async loadNativeParent(txid: string, blockHash?: string): Promise<NativeParent> {
-    const rawHex = await this.raw(txid, blockHash); const decoded = decodeNativeTransaction(rawHex);
+    const rawHex = await this.raw(txid, blockHash); return this.classifyNative(txid, rawHex, decodeNativeTransaction(rawHex));
+  }
+  private async classifyNative(txid: string, rawHex: string, decoded: NativeTransaction): Promise<NativeParent> {
     const asset = record(await this.rpc.call('decodeassettransaction', [rawHex, false]));
     const summary = record(asset.asset_summary);
     if (summary.has_assets !== false || summary.has_icu !== false) throw new GatewayError('unsupported-transaction', 'Assets and ICU transactions are unsupported', 422);
@@ -211,7 +213,8 @@ export class Gateway {
   }
 
   private async mempoolTransaction(txid: string): Promise<MempoolTransaction> {
-    const cached = this.mempoolCache.get(txid); if (cached) return cached;
+    // Re-inserting on a hit keeps current mempool members newest, so departed transactions are evicted first.
+    const cached = this.mempoolCache.get(txid); if (cached) { this.mempoolCache.delete(txid); this.mempoolCache.set(txid, cached); return cached; }
     const existing = this.mempoolFlights.get(txid); if (existing) return existing;
     const pending = (async () => {
       // Core's verbose decoder also exposes outpoints/scripts for unsupported
@@ -223,7 +226,7 @@ export class Gateway {
       const inputs = array(value.vin, 1000).map(v => { const input = record(v); return { txid: hash(input.txid), vout: integer(input.vout) }; });
       const outputs = array(value.vout, 2000).map((v, n) => { const output = record(v); ensure(integer(output.n) === n); const amount = coinUnits(output.value); ensure(amount >= 0n); return { vout: n, amount, scriptHex: script(record(output.scriptPubKey).hex) }; });
       const result = { txid, rawHex, inputs, outputs };
-      while (this.mempoolCache.size >= this.config.maxHistoryTransactions || this.mempoolCacheCharacters + rawHex.length > 16_000_000) {
+      while (this.mempoolCache.size >= this.config.maxMempoolTransactions || this.mempoolCacheCharacters + rawHex.length > this.config.maxMempoolHexCharacters) {
         const oldest = this.mempoolCache.keys().next().value; if (!oldest) break;
         this.mempoolCacheCharacters -= this.mempoolCache.get(oldest)!.rawHex.length; this.mempoolCache.delete(oldest);
       }
@@ -240,18 +243,18 @@ export class Gateway {
     // and strictly decoded bytes supply the actual delta, outputs and spend graph.
     collection.history = collection.history.filter(h => h.status !== 'pending');
     collection.candidates = collection.candidates.filter(c => c.blockHeight !== null && !mempoolIds.has(c.txid));
-    if (ids.length > this.config.maxHistoryTransactions) { collection.complete = false; collection.warnings.push('Core mempool limit reached; pending transfers are incomplete.'); }
+    if (ids.length > this.config.maxMempoolTransactions) { collection.complete = false; collection.warnings.push('Core mempool limit reached; pending transfers are incomplete.'); }
     let decodedCharacters = 0; let decodedEdges = 0;
-    const transactions = (await mapBounded(ids.slice(0, this.config.maxHistoryTransactions), async txid => {
+    const transactions = (await mapBounded(ids.slice(0, this.config.maxMempoolTransactions), async txid => {
       try { const tx = await this.mempoolTransaction(txid); decodedCharacters += tx.rawHex.length; decodedEdges += tx.inputs.length + tx.outputs.length;
-        if (decodedCharacters > 16_000_000 || decodedEdges > 100000) { collection.complete = false; collection.warnings.push('Core mempool graph limit reached; pending transfers are incomplete.'); return null; }
+        if (decodedCharacters > this.config.maxMempoolHexCharacters || decodedEdges > this.config.maxMempoolEdges) { collection.complete = false; collection.warnings.push('Core mempool graph limit reached; pending transfers are incomplete.'); return null; }
         return tx; }
       catch { collection.complete = false; collection.warnings.push('Core mempool transaction is unavailable; pending transfers are incomplete.'); return null; }
     })).filter((tx): tx is MempoolTransaction => tx !== null);
     let edges = 0;
     for (const tx of transactions) {
       edges += tx.inputs.length + tx.outputs.length;
-      if (edges > 100000) { collection.complete = false; collection.warnings.push('Core mempool graph limit reached; pending transfers are incomplete.'); return; }
+      if (edges > this.config.maxMempoolEdges) { collection.complete = false; collection.warnings.push('Core mempool graph limit reached; pending transfers are incomplete.'); return; }
       for (const output of tx.outputs) {
         const address = scripts.get(output.scriptHex); if (!address) continue;
         collection.ownedOutpoints.set(key(tx.txid, output.vout), { txid: tx.txid, vout: output.vout, address, scriptHex: output.scriptHex, amount: output.amount, blockHeight: null, coinbase: false });
@@ -604,7 +607,7 @@ export class Gateway {
   private async validateAtTip(rawHex: string, network: NetworkInfo): Promise<ValidationResult> {
     const tx = this.parseSigned(rawHex);
     // Strict local decoding forbids extension flags; Core independently classifies it.
-    this.rememberRaw(tx.txid, rawHex); await this.nativeParent(tx.txid);
+    await this.classifyNative(tx.txid, rawHex, tx);
     if (await this.alreadyKnown(tx.txid, tx)) return { txid: tx.txid, allowed: true, alreadyKnown: true };
     let inputTotal = 0n;
     for (const input of tx.inputs) {

@@ -93,27 +93,72 @@ async function restore(page: Page) {
 }
 
 for (const reason of ['block-validation', 'index-sync'] satisfies NetworkReadinessReason[]) {
-  test(`${reason} onboarding shows a neutral update and recovers on the next light five-second probe`, async ({ page }) => {
+  test(`${reason} onboarding stays available without a network banner and recovers on the next light five-second probe`, async ({ page }) => {
     await page.clock.install();
     const fixture = await networkFixture(page); fixture.block(true, reason);
     await page.goto('/');
+    const badge = page.locator('.network-badge');
+    await expect(badge).toHaveText('Regtest');
+    await expect(badge).toHaveClass(/network-waiting/);
     const update = page.locator('.network-update');
-    await expect(update).toHaveAttribute('role', 'status');
-    await expect(update).toContainText('Updating wallet data');
+    await expect(update).toHaveCount(0);
     await expect(page.locator('.message.error')).toHaveCount(0);
     await expect(page.getByRole('alert')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Retry connection', exact: true })).toHaveCount(0);
     const create = page.getByRole('button', { name: 'Create a wallet', exact: false });
-    await expect(create).toBeDisabled();
-    await expect(page.getByRole('button', { name: 'Restore a wallet', exact: true })).toBeDisabled();
+    await expect(create).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Restore a wallet', exact: true })).toBeEnabled();
     const before = fixture.networkCount();
     fixture.block(false);
     await page.clock.runFor(5000);
+    await expect(badge).not.toHaveClass(/network-waiting/);
     await expect(create).toBeEnabled();
     await expect(update).toHaveCount(0);
     expect(fixture.networkCount()).toBe(before + 1); expect(fixture.addressCount()).toBe(0);
   });
 }
+
+test('onboarding waits for the network identity on a first visit and remembers it while the gateway is unreachable', async ({ page }) => {
+  await page.clock.install();
+  const fixture = await networkFixture(page); fixture.unavailable(true);
+  await page.goto('/');
+  const warning = page.locator('.message.error').filter({ hasText: 'Network connection unavailable' });
+  await expect(warning).toBeVisible();
+  const create = page.getByRole('button', { name: 'Create a wallet', exact: false });
+  const restoreWallet = page.getByRole('button', { name: 'Restore a wallet', exact: true });
+  await expect(create).toBeDisabled();
+  await expect(restoreWallet).toBeDisabled();
+  expect(await page.evaluate(() => localStorage.getItem('tensorcash.network'))).toBeNull();
+
+  fixture.unavailable(false); fixture.block(true, 'index-sync');
+  await warning.getByRole('button', { name: 'Retry connection', exact: true }).click();
+  await expect(create).toBeEnabled();
+  await expect(restoreWallet).toBeEnabled();
+  await expect(page.locator('.network-update')).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem('tensorcash.network'))).toBe('regtest');
+
+  fixture.unavailable(true);
+  await page.reload();
+  await expect(warning).toBeVisible();
+  await expect(page.locator('.network-badge')).toHaveText('Connecting');
+  await expect(create).toBeEnabled();
+  await restoreWallet.click();
+  await page.locator('textarea[name="mnemonic"]').fill(PHRASE);
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await page.locator('input[name="confirmPassword"]').fill(PASSWORD);
+  await page.getByRole('button', { name: 'Restore wallet', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Keep it simple.' })).toBeVisible();
+  await expect(page.getByTestId('wallet-sync')).toHaveText('Retrying');
+  await expect(page.locator('.sync-warning')).toContainText('Network connection unavailable');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.locator('.balance-actions').getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+  expect(fixture.addressCount()).toBe(0);
+
+  fixture.unavailable(false); fixture.block(false);
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await expect(page.getByTestId('wallet-sync')).toHaveAttribute('data-sync-state', 'idle');
+  await expect(page.getByTestId('balance-total')).toContainText('0.01');
+});
 
 test('lasting index update retains balance, explains the delay neutrally, and only probes readiness until recovery', async ({ page }) => {
   await page.clock.install();

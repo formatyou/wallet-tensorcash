@@ -12,6 +12,7 @@ export interface GatewayConfig {
   coinbaseMaturity?: number; maximumFeeUnits?: string; maximumFeeRate?: string;
   requestTimeoutMs?: number; maxHistoryPages?: number; maxHistoryTransactions?: number;
   maxWatchedAddresses?: number; logger?: boolean; rpc?: Rpc; fetch?: typeof fetch;
+  maxMempoolTransactions?: number; maxMempoolHexCharacters?: number; maxMempoolEdges?: number;
   syncRateLimit?: number; rateLimit?: number;
 }
 export type ResolvedConfig = GatewayConfig & {
@@ -19,6 +20,7 @@ export type ResolvedConfig = GatewayConfig & {
   maxTipAgeSeconds: number; minConfirmations: number; coinbaseMaturity: number;
   maximumFeeUnits: string; maximumFeeRate: string; requestTimeoutMs: number;
   maxHistoryPages: number; maxHistoryTransactions: number; maxWatchedAddresses: number;
+  maxMempoolTransactions: number; maxMempoolHexCharacters: number; maxMempoolEdges: number;
 };
 export function resolveConfig(input: GatewayConfig): ResolvedConfig {
   const config: ResolvedConfig = {
@@ -27,6 +29,7 @@ export function resolveConfig(input: GatewayConfig): ResolvedConfig {
     maxTipAgeSeconds: input.network === 'mainnet' ? 7200 : 86400,
     minConfirmations: input.network === 'mainnet' ? 2 : 1, coinbaseMaturity: 100, maximumFeeUnits: '1000000', maximumFeeRate: '100',
     requestTimeoutMs: 10000, maxHistoryPages: 20, maxHistoryTransactions: 500, maxWatchedAddresses: 10000,
+    maxMempoolTransactions: 5000, maxMempoolHexCharacters: 16_000_000, maxMempoolEdges: 20 * (input.maxMempoolTransactions ?? 5000),
     ...input,
   };
   if (!['mainnet', 'regtest'].includes(config.network)) throw new Error('Unsupported gateway network');
@@ -38,10 +41,11 @@ export function resolveConfig(input: GatewayConfig): ResolvedConfig {
   if (!/^[0-9a-f]{64}$/.test(config.expectedGenesis)) throw new Error('Invalid genesis');
   if (config.expectedGenesis !== (config.network === 'mainnet' ? MAINNET_GENESIS : REGTEST_GENESIS)) throw new Error('Genesis differs from supported network');
   if (!config.allowedOrigins.length || config.allowedOrigins.some(o => new URL(o).origin !== o)) throw new Error('Explicit canonical allowed origins required');
-  for (const n of [config.maxTipAgeSeconds, config.minConfirmations, config.coinbaseMaturity, config.requestTimeoutMs, config.maxHistoryPages, config.maxHistoryTransactions, config.maxWatchedAddresses]) {
+  for (const n of [config.maxTipAgeSeconds, config.minConfirmations, config.coinbaseMaturity, config.requestTimeoutMs, config.maxHistoryPages, config.maxHistoryTransactions, config.maxWatchedAddresses, config.maxMempoolTransactions, config.maxMempoolHexCharacters, config.maxMempoolEdges]) {
     if (!Number.isSafeInteger(n) || n <= 0) throw new Error('Invalid gateway limit');
   }
   if (config.maxHistoryPages > 100 || config.maxHistoryTransactions > 5000 || config.requestTimeoutMs > 60000 || config.maxWatchedAddresses > 100000) throw new Error('Gateway limit exceeds hard bound');
+  if (config.maxMempoolTransactions > 100000 || config.maxMempoolHexCharacters > 64_000_000 || config.maxMempoolEdges > 2_000_000) throw new Error('Gateway limit exceeds hard bound');
   if (!/^[1-9][0-9]{0,11}$/.test(config.maximumFeeUnits) || !/^[1-9][0-9]{0,5}$/.test(config.maximumFeeRate)) throw new Error('Invalid gateway fee cap');
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(config.watchWallet)) throw new Error('Invalid watch-only wallet name');
   for (const limit of [config.syncRateLimit ?? 60, config.rateLimit ?? 90]) if (!Number.isSafeInteger(limit) || limit < 1 || limit > 2000) throw new Error('Invalid request rate limit');

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { confirmationView, formatDuration, formatTsc, formatUpdatedAt, parseTsc, safeExplorerLink, walletBalances } from './format';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { confirmationView, formatDuration, formatTsc, formatUpdatedAt, KNOWN_NETWORK_KEY, parseTsc, readKnownNetwork, rememberKnownNetwork, safeExplorerLink, walletBalances } from './format';
 import type { Utxo, WalletSnapshot } from '../shared/types';
 
 function coin(overrides: Partial<Utxo> = {}): Utxo {
@@ -35,6 +35,35 @@ describe('external history links', () => {
   it('rejects active schemes and invalid transaction identifiers', () => {
     expect(safeExplorerLink('javascript:alert(1)', txid)).toBeNull();
     expect(safeExplorerLink('https://tscscan.xyz', '../bad')).toBeNull();
+  });
+});
+describe('remembered network identity', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('accepts only a stored mainnet or regtest value', () => {
+    const values = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (key: string) => values.get(key) ?? null });
+    expect(readKnownNetwork()).toBeNull();
+    for (const network of ['mainnet', 'regtest']) { values.set(KNOWN_NETWORK_KEY, network); expect(readKnownNetwork()).toBe(network); }
+    for (const invalid of ['', 'Mainnet', 'regtest ', 'testnet', '"mainnet"', 'null']) { values.set(KNOWN_NETWORK_KEY, invalid); expect(readKnownNetwork()).toBeNull(); }
+  });
+  it('lets a fresh identity replace the remembered one and writes only on change', () => {
+    const values = new Map<string, string>();
+    const setItem = vi.fn((key: string, value: string) => { values.set(key, value); });
+    vi.stubGlobal('localStorage', { getItem: (key: string) => values.get(key) ?? null, setItem });
+    rememberKnownNetwork('mainnet'); rememberKnownNetwork('mainnet');
+    expect(readKnownNetwork()).toBe('mainnet');
+    rememberKnownNetwork('regtest');
+    expect(readKnownNetwork()).toBe('regtest');
+    expect(setItem).toHaveBeenCalledTimes(2);
+  });
+  it('treats unavailable storage as an unknown identity without throwing', () => {
+    const blocked = () => { throw new Error('storage blocked'); };
+    vi.stubGlobal('localStorage', { getItem: blocked, setItem: blocked });
+    expect(readKnownNetwork()).toBeNull();
+    expect(() => rememberKnownNetwork('mainnet')).not.toThrow();
+    vi.stubGlobal('localStorage', undefined);
+    expect(readKnownNetwork()).toBeNull();
+    expect(() => rememberKnownNetwork('regtest')).not.toThrow();
   });
 });
 describe('confirmation-aware wallet balances', () => {

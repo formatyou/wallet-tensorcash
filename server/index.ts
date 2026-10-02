@@ -8,6 +8,7 @@ export function configFromEnvironment(env: NodeJS.ProcessEnv = process.env): { c
   const host = env.WALLET_HOST || '127.0.0.1'; const port = Number(env.WALLET_PORT || '8790');
   if (!['127.0.0.1', '::1', 'localhost'].includes(host) || !Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error('Gateway must bind a valid loopback address and port');
   const positive = (name: string, fallback: number) => { const value = env[name] === undefined ? fallback : Number(env[name]); if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Invalid ${name}`); return value; };
+  const maxMempoolTransactions = positive('WALLET_MAX_MEMPOOL_TRANSACTIONS', 5000);
   const config: GatewayConfig = {
     network, rpcUrl: env.CORE_RPC_URL || (network === 'mainnet' ? 'http://127.0.0.1:39242' : 'http://127.0.0.1:19453'),
     cookieFile: env.CORE_COOKIE_FILE || undefined,
@@ -23,6 +24,8 @@ export function configFromEnvironment(env: NodeJS.ProcessEnv = process.env): { c
     maximumFeeUnits: env.WALLET_MAX_FEE_UNITS || '1000000', maximumFeeRate: env.WALLET_MAX_FEE_RATE || '100',
     requestTimeoutMs: positive('WALLET_RPC_TIMEOUT_MS', 10000), maxHistoryPages: positive('WALLET_MAX_HISTORY_PAGES', 20),
     maxHistoryTransactions: positive('WALLET_MAX_HISTORY_TRANSACTIONS', 500), maxWatchedAddresses: positive('WALLET_MAX_WATCHED_ADDRESSES', 10000), logger: false,
+    maxMempoolTransactions, maxMempoolHexCharacters: positive('WALLET_MAX_MEMPOOL_HEX_CHARACTERS', 16_000_000),
+    maxMempoolEdges: positive('WALLET_MAX_MEMPOOL_EDGES', 20 * maxMempoolTransactions),
   };
   return { config, host, port };
 }

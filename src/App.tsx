@@ -9,8 +9,8 @@ import { createProvider, NetworkReadinessError } from './provider/client';
 import { networkRetryDelay, WalletRecovery } from './provider/recovery';
 import { discoverWallet, refreshKnownWallet, type DiscoveredWallet } from './provider/discovery';
 import { isPendingTransferReconciled, reconcilePendingTransfers } from './wallet/reconciliation';
-import type { AddressRecord, FeePolicy, HistoryEntry, NetworkInfo, SignedTransfer, TransferPlan, WalletMetadata, WalletSnapshot } from './shared/types';
-import { confirmationView, eligibleUtxos, errorMessage, formatDuration, formatTsc, formatUpdatedAt, parseTsc, readReceiveCursor, receiveCursorKey, rememberReceiveCursor, safeExplorerLink, walletBalances } from './ui/format';
+import type { AddressRecord, FeePolicy, HistoryEntry, NetworkInfo, SignedTransfer, TransferPlan, WalletMetadata, WalletNetwork, WalletSnapshot } from './shared/types';
+import { confirmationView, eligibleUtxos, errorMessage, formatDuration, formatTsc, formatUpdatedAt, parseTsc, readKnownNetwork, readReceiveCursor, receiveCursorKey, rememberKnownNetwork, rememberReceiveCursor, safeExplorerLink, walletBalances } from './ui/format';
 import { acceptedTransfersKey, clearJournal, hasJournal, loadAcceptedTransfers, loadJournal, markBroadcastAttempted, rememberAcceptedTransfer, retainAcceptedTransfers, saveJournal } from './ui/broadcast-journal';
 
 type Tab = 'overview' | 'receive' | 'send' | 'settings';
@@ -86,7 +86,7 @@ function NetworkDetails({ network }: { network: NetworkInfo }) {
     <div><dt>Latest block</dt><dd>{network.height.toLocaleString()}{network.lastBlockTime ? <small>{new Date(network.lastBlockTime * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small> : null}</dd></div>
   </dl></details>;
 }
-function NetworkUpdate({ network, hasWallet, unlocked, hasBalance }: { network: NetworkInfo; hasWallet: boolean; unlocked: boolean; hasBalance: boolean }) {
+function NetworkUpdate({ network, unlocked, hasBalance }: { network: NetworkInfo; unlocked: boolean; hasBalance: boolean }) {
   const [takingLonger, setTakingLonger] = useState(false);
   useEffect(() => {
     const timer = setTimeout(() => setTakingLonger(true), 30_000);
@@ -96,7 +96,7 @@ function NetworkUpdate({ network, hasWallet, unlocked, hasBalance }: { network: 
   const title = takingLonger ? 'Wallet data is taking longer to update' : unavailable ? 'Waiting for wallet data' : 'Updating wallet data';
   return <div className="callout network-update" role="status"><Icon name="refresh" size={16} /><div><strong>{title}</strong><p>{unlocked
     ? hasBalance ? 'Last verified balance shown. Checking for updates.' : 'Checking your balance automatically.'
-    : hasWallet ? 'You can unlock while we refresh.' : 'Checking the network automatically.'}</p></div></div>;
+    : 'You can unlock while we refresh.'}</p></div></div>;
 }
 function ActivityRow({ entry, network }: { entry: HistoryEntry; network: NetworkInfo }) {
   const incoming = BigInt(entry.deltaUnits) >= 0n;
@@ -129,6 +129,7 @@ export default function App() {
   const provider = useRef(createProvider()).current;
   const [metadata, setMetadata] = useState<WalletMetadata | null>(null);
   const [network, setNetwork] = useState<NetworkInfo | null>(null);
+  const [knownNetwork, setKnownNetwork] = useState<WalletNetwork | null>(readKnownNetwork);
   const [unlocked, setUnlocked] = useState(false);
   const [initialized, setInitialized] = useState(false);
   const [welcomeMode, setWelcomeMode] = useState<'start' | 'create' | 'restore'>('start');
@@ -192,6 +193,7 @@ export default function App() {
     setSyncTrusted(false);
     const waiting = failure instanceof NetworkReadinessError ? failure.info : null;
     setNetwork(waiting); setNetworkWaiting(waiting);
+    if (waiting) { setKnownNetwork(waiting.network); rememberKnownNetwork(waiting.network); }
     setConnectionError(waiting ? '' : errorMessage(failure));
   }, [walletRecovery]);
 
@@ -201,7 +203,7 @@ export default function App() {
       try {
         const info = await provider.network();
         unavailableAttempts.current = 0;
-        if (alive.current) { connectionReady.current = true; setNetwork(info); setNetworkWaiting(null); setConnectionError(''); }
+        if (alive.current) { connectionReady.current = true; setNetwork(info); setNetworkWaiting(null); setConnectionError(''); setKnownNetwork(info.network); rememberKnownNetwork(info.network); }
         return info;
       } catch (failure) {
         const message = errorMessage(failure);
@@ -439,8 +441,8 @@ export default function App() {
     const { data, form } = submitData(event);
     void run(async active => {
       const password = validateNewPassword(data);
-      if (!network?.ready) throw new Error('Wait for a ready network connection before creating a wallet.');
-      const created = await wallet.create(password, network.network);
+      if (!knownNetwork) throw new Error('Wait for a network connection before creating a wallet.');
+      const created = await wallet.create(password, knownNetwork);
       form.reset();
       if (!active()) return;
       setMetadata(created.metadata); setUnlocked(true); setSeed({ mnemonic: created.mnemonic, purpose: 'create' }); setSeedObscured(document.hidden); setConfirmSeed(false);
@@ -456,11 +458,11 @@ export default function App() {
     if (invalid) { setRestoreError(invalid.validationMessage); return; }
     void run(async active => {
       try {
-        if (!network?.ready) throw new Error('Connect to a ready gateway before restoring your wallet.');
+        if (!knownNetwork) throw new Error('Connect to a gateway before restoring your wallet.');
         let restored: WalletMetadata;
         if (restoreMode === 'seed') {
           const password = validateNewPassword(data);
-          restored = await wallet.restore(requiredText(data, 'mnemonic'), password, network.network);
+          restored = await wallet.restore(requiredText(data, 'mnemonic'), password, knownNetwork);
         } else {
           if (!encryptedImport.trim()) throw new Error('Choose your encrypted wallet backup file.');
           restored = await wallet.importBackup(encryptedImport, requiredText(data, 'password'));
@@ -468,7 +470,7 @@ export default function App() {
         if (!active()) return;
         form.reset();
         setMetadata(restored); setEncryptedImport('');
-        if (restored.network !== network.network) { await lock('Backup restored. Connect a gateway for its network before unlocking.'); return; }
+        if (restored.network !== knownNetwork) { await lock('Backup restored. Connect a gateway for its network before unlocking.'); return; }
         setUnlocked(true); setTab('overview');
       } catch (failure) {
         if (active()) setRestoreError(errorMessage(failure));
@@ -705,7 +707,7 @@ export default function App() {
         {error && <Toast message={error} tone="error" dismissLabel="Dismiss error" onDismiss={() => setError('')} />}
         {notice && <Toast message={notice} tone="success" dismissLabel="Dismiss notice" onDismiss={() => setNotice('')} />}
       </div>
-      <div className="announcements">{networkWaiting && !unlocked && <NetworkUpdate network={networkWaiting} hasWallet={!!metadata} unlocked={false} hasBalance={false} />}{busy && <div className="working" role="status"><span className="spinner" aria-hidden="true" />{progress || 'Working securely on your device…'}</div>}</div>
+      <div className="announcements">{networkWaiting && !unlocked && metadata && <NetworkUpdate network={networkWaiting} unlocked={false} hasBalance={false} />}{busy && <div className="working" role="status"><span className="spinner" aria-hidden="true" />{progress || 'Working securely on your device…'}</div>}</div>
       {!initialized ? <section className="card onboarding-card"><h1>Opening your wallet</h1><p className="muted">Checking this device and connecting to the network.</p></section>
       : seed && seedObscured ? <section className="card onboarding-card"><span className="eyebrow">Your recovery phrase</span><h1>Recovery phrase hidden</h1><p className="muted">Your backup is still open. Continue when your screen is private.</p><button className="button primary full" onClick={() => setSeedObscured(false)}>{seed.purpose === 'create' ? 'Continue backup' : 'Show recovery phrase again'}</button>{seed.purpose === 'reveal' && <button className="button text full" onClick={() => { setSeed(null); setSeedObscured(false); setSettingsMode('menu'); }}>Hide recovery phrase</button>}</section>
       : seed ? <section className="card onboarding-card seed-card"><span className="eyebrow">{seed.purpose === 'create' ? 'Secure your wallet' : 'Your recovery phrase'}</span><h1>{confirmSeed ? 'Check your written backup' : 'Write down these 12 words'}</h1>
@@ -723,24 +725,23 @@ export default function App() {
       : !unlocked ? <><section className="onboarding-layout"><div className="intro"><span className="eyebrow">TensorCash · Self-custody wallet</span><h1>A simple home <br />for your TensorCash.</h1><p>A browser wallet for native TSC. Your keys are generated and encrypted on this device, and every payment is signed here before it reaches the network.</p>
           <dl className="intro-facts"><div><dt>Backup</dt><dd>12-word recovery phrase</dd></div><div><dt>Encryption</dt><dd>scrypt + AES-256-GCM, in this browser</dd></div><div><dt>Account</dt><dd>None. No email, no sign-up.</dd></div></dl>
           <p className="intro-links"><a className="intro-source" href={SOURCE_URL} target="_blank" rel="noreferrer"><GitHubMark />Review the source <span aria-hidden="true">↗</span></a><span>Open source · MIT licence</span></p></div>
-        <div className="card onboarding-card">{welcomeMode === 'start' ? <><span className="eyebrow">Get started</span><h2>Your keys. Your wallet.</h2><p className="muted">Create a new wallet or recover one you already own.</p><button className="button primary full" disabled={busy || !network?.ready} onClick={() => setWelcomeMode('create')}>Create a wallet <span>→</span></button><button className="button secondary full" disabled={busy || !network?.ready} onClick={() => setWelcomeMode('restore')}>Restore a wallet</button><p className="footnote">Keep a written backup. Browser storage can be cleared or lost.</p></>
-          : welcomeMode === 'create' ? <><button className="back-link" onClick={() => setWelcomeMode('start')} disabled={busy}>← Back</button><h2>Create your wallet</h2><p className="muted">Choose a strong password for the encrypted wallet on this device.</p><form onSubmit={startCreate}><PasswordField confirm /><PasswordField name="confirmPassword" label="Confirm password" confirm /><Field label="Network"><select value={network?.network ?? ''} disabled><option value="mainnet">TensorCash mainnet</option><option value="regtest">Regtest — test coins</option><option value="">Connecting…</option></select></Field><p className="footnote">The network is set by your connected gateway.</p><button className="button primary full" disabled={busy || !network?.ready}>Create & back up wallet</button></form></>
+        <div className="card onboarding-card">{welcomeMode === 'start' ? <><span className="eyebrow">Get started</span><h2>Your keys. Your wallet.</h2><p className="muted">Create a new wallet or recover one you already own.</p><button className="button primary full" disabled={busy || !knownNetwork} onClick={() => setWelcomeMode('create')}>Create a wallet <span>→</span></button><button className="button secondary full" disabled={busy || !knownNetwork} onClick={() => setWelcomeMode('restore')}>Restore a wallet</button><p className="footnote">Keep a written backup. Browser storage can be cleared or lost.</p></>
+          : welcomeMode === 'create' ? <><button className="back-link" onClick={() => setWelcomeMode('start')} disabled={busy}>← Back</button><h2>Create your wallet</h2><p className="muted">Choose a strong password for the encrypted wallet on this device.</p><form onSubmit={startCreate}><PasswordField confirm /><PasswordField name="confirmPassword" label="Confirm password" confirm /><Field label="Network"><select value={knownNetwork ?? ''} disabled><option value="mainnet">TensorCash mainnet</option><option value="regtest">Regtest — test coins</option><option value="">Connecting…</option></select></Field><p className="footnote">The network is set by your connected gateway.</p><button className="button primary full" disabled={busy || !knownNetwork}>Create & back up wallet</button></form></>
           : <><button className="back-link" onClick={() => { setWelcomeMode('start'); setEncryptedImport(''); setRestoreError(''); }} disabled={busy}>← Back</button><h2>Restore your wallet</h2><p className="muted">Recover your addresses and funds using your wallet backup.</p><div className="segmented" role="group" aria-label="Backup type"><button className={restoreMode === 'seed' ? 'selected' : ''} disabled={busy} onClick={() => { setRestoreMode('seed'); setRestoreError(''); }}>Recovery phrase</button><button className={restoreMode === 'file' ? 'selected' : ''} disabled={busy} onClick={() => { setRestoreMode('file'); setRestoreError(''); }}>Encrypted file</button></div>
             <form onSubmit={startRestore} noValidate>{restoreMode === 'seed' ? <><Field label="12-word recovery phrase" hint="English words, separated by spaces. This wallet uses no additional BIP39 passphrase."><textarea name="mnemonic" rows={3} required autoComplete="off" autoCapitalize="none" spellCheck={false} aria-invalid={restoreError ? true : undefined} aria-describedby={restoreError ? 'restore-error' : undefined} /></Field><PasswordField label="New wallet password" confirm /><PasswordField name="confirmPassword" label="Confirm new password" confirm /></>
-              : <><Field label="Encrypted JSON backup"><input type="file" accept="application/json,.json" required onChange={event => { const file = event.target.files?.[0]; if (!file) { setEncryptedImport(''); return; } if (file.size > 8192) { setEncryptedImport(''); setRestoreError('The backup file exceeds the supported 8 KB size.'); event.target.value = ''; return; } void file.text().then(setEncryptedImport).catch(() => { setEncryptedImport(''); setRestoreError('The backup file could not be read.'); }); }} /></Field><PasswordField label="Backup password" /></>}{restoreError && <div id="restore-error" ref={restoreErrorRef} className="message error restore-error" role="alert" tabIndex={-1}>{restoreError}</div>}<button className="button primary full" disabled={busy || !network?.ready}>Restore wallet</button></form></>}</div></section>
+              : <><Field label="Encrypted JSON backup"><input type="file" accept="application/json,.json" required onChange={event => { const file = event.target.files?.[0]; if (!file) { setEncryptedImport(''); return; } if (file.size > 8192) { setEncryptedImport(''); setRestoreError('The backup file exceeds the supported 8 KB size.'); event.target.value = ''; return; } void file.text().then(setEncryptedImport).catch(() => { setEncryptedImport(''); setRestoreError('The backup file could not be read.'); }); }} /></Field><PasswordField label="Backup password" /></>}{restoreError && <div id="restore-error" ref={restoreErrorRef} className="message error restore-error" role="alert" tabIndex={-1}>{restoreError}</div>}<button className="button primary full" disabled={busy || !knownNetwork}>Restore wallet</button></form></>}</div></section>
         <section className="how" aria-labelledby="how-heading"><div className="how-head"><h2 id="how-heading">How it works</h2><p>Your keys stay inside the line. Only signed transactions cross it.</p></div>
           <LandingDiagram />
           <ol className="how-steps">
             <li><span className="how-num">01</span><h3>Created on your device</h3><p>A 12-word recovery phrase is generated from your browser’s cryptographic randomness. The wallet is stored encrypted with your password and locks after five minutes of inactivity.</p></li>
             <li><span className="how-num">02</span><h3>Signed where you review it</h3><p>You check the recipient, amount and fee. A dedicated worker signs exactly that transfer. Your phrase, password and private keys are never sent to the server.</p></li>
             <li><span className="how-num">03</span><h3>Relayed, not held</h3><p>The gateway reads balances for your public addresses, checks the signed transaction against its TensorCash node and publishes it. It holds no keys and cannot sign for you.</p></li>
-          </ol>
-          <p className="how-note">Initial release, not yet independently audited. Keep your recovery phrase offline and start with small amounts.</p></section></>
+          </ol></section></>
       : <>
         <div className="wallet-heading"><div><span className="eyebrow">Your wallet</span><h1>Keep it simple.</h1></div><div className="refresh-control"><span className={`sync-status ${lastKnownBalance && !networkWaiting ? 'stale' : ''}`} data-testid="wallet-sync" data-sync-state={syncState} role="status" aria-live={snapshot ? 'off' : 'polite'}>{syncing ? <><span className="spinner" />{snapshot ? 'Updating' : 'Checking balance'}</> : networkWaiting ? 'Updating' : syncError || connectionError ? 'Retrying' : awaitingReconciliation ? 'Updating payment' : snapshotCached ? 'Last known' : snapshot ? 'Up to date' : 'Checking balance'}</span><button className="button compact secondary" onClick={refresh} disabled={busy || syncing}><Icon name="refresh" />Refresh</button></div></div>
         <nav className="tabs" aria-label="Wallet sections">{(['overview', 'receive', 'send', 'settings'] as Tab[]).map(item => <button key={item} aria-current={tab === item ? 'page' : undefined} className={tab === item ? 'active' : ''} disabled={busy && item !== tab} onClick={() => { setTab(item); setError(''); }}><Icon name={item === 'overview' ? 'wallet' : item === 'send' ? 'arrow-up' : item === 'receive' ? 'arrow-down' : 'settings'} />{item.charAt(0).toUpperCase() + item.slice(1)}</button>)}</nav>
         {snapshot?.warnings.map((warning, index) => <div key={index} className="callout warning">{warning}</div>)}
-        {networkWaiting ? <NetworkUpdate network={networkWaiting} hasWallet={!!metadata} unlocked hasBalance={!!balances} /> : (syncError || connectionError) && <div className="callout warning sync-warning" role="status">{connectionError || syncError}</div>}
+        {networkWaiting ? <NetworkUpdate network={networkWaiting} unlocked hasBalance={!!balances} /> : (syncError || connectionError) && <div className="callout warning sync-warning" role="status">{connectionError || syncError}</div>}
         {journalBlocked && tab !== 'send' && <div className="callout warning">A saved transfer needs attention before you send another payment. <button className="inline-link" onClick={() => setTab('send')}>Review saved transfer</button></div>}
         {tab === 'overview' && <>
           <section className="card balance-card" aria-label="Wallet balances"><div className="balance-main"><span className="eyebrow">{snapshot && lastKnownBalance ? 'Last known balance' : 'Total balance'}</span><div className={`balance-number ${balances ? '' : 'balance-unknown'}`} data-testid="balance-total" aria-label={balances ? undefined : 'Total balance is loading'}>{totalBalance === null ? '—' : formatTsc(totalBalance)}<span>TSC</span></div><p className="balance-meta">{snapshot ? <>{lastKnownBalance ? 'Last verified' : 'Updated'} <time dateTime={cachedDisplay?.verifiedAt ?? snapshot.observedAt} title={new Date(cachedDisplay?.verifiedAt ?? snapshot.observedAt).toLocaleString()}>{formatUpdatedAt(cachedDisplay?.verifiedAt ?? snapshot.observedAt)}</time></> : 'Checking balance…'}</p></div>

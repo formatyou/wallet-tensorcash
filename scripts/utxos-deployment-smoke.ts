@@ -35,10 +35,10 @@ for (const [name, browserType] of Object.entries({ chromium, firefox, webkit }))
     expect(network.genesisHash).toBe('8fe43be4634dc48def074fa840e25a71bbdc32576eb29abf3ce2458605343720');
     expect(network.minConfirmations).toBe(2);
     await expect(page.getByRole('button', { name: /^Create a wallet/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Create a wallet/ })).toBeEnabled();
     if (!network.ready && ['block-validation', 'index-sync'].includes(network.readinessReason ?? '')) {
-      await expect(page.locator('.network-update')).toHaveAttribute('role', 'status');
+      await expect(page.locator('.network-update')).toHaveCount(0);
       await expect(page.getByRole('alert')).toHaveCount(0);
-      await expect(page.getByRole('button', { name: /^Create a wallet/ })).toBeDisabled();
     }
     const layoutChecks: { width: number; overflow: boolean }[] = [];
     for (const width of [1440, 390, 320]) {

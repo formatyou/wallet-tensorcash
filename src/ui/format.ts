@@ -1,4 +1,4 @@
-import type { HistoryEntry, NetworkInfo, Utxo, WalletSnapshot } from '../shared/types';
+import type { HistoryEntry, NetworkInfo, Utxo, WalletNetwork, WalletSnapshot } from '../shared/types';
 
 export const UNIT = 100_000_000n;
 export function formatTsc(value: string | bigint): string {
@@ -46,6 +46,17 @@ export function readReceiveCursor(walletId: string): number {
 }
 export function rememberReceiveCursor(walletId: string, index: number): void {
   localStorage.setItem(receiveCursorKey(walletId), String(index));
+}
+export const KNOWN_NETWORK_KEY = 'tensorcash.network';
+export function readKnownNetwork(): WalletNetwork | null {
+  try {
+    const value = localStorage.getItem(KNOWN_NETWORK_KEY);
+    return value === 'mainnet' || value === 'regtest' ? value : null;
+  } catch { return null; }
+}
+export function rememberKnownNetwork(network: WalletNetwork): void {
+  try { if (localStorage.getItem(KNOWN_NETWORK_KEY) !== network) localStorage.setItem(KNOWN_NETWORK_KEY, network); }
+  catch { /* Remembering the network is optional; onboarding then waits for the gateway. */ }
 }
 export function safeExplorerLink(explorerUrl: string | null, txid: string): string | null {
   if (!explorerUrl || !/^[a-f0-9]{64}$/i.test(txid)) return null;
