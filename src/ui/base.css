@@ -8,3 +8,4 @@
 .footer-brand{display:inline-flex;align-items:center;gap:7px}.footer-brand img{display:block;flex-shrink:0}
 
 .footer-brand .brand-wordmark{font-size:11px;font-weight:600;line-height:1.2}.footer-brand .brand-subtitle{font-size:7px;color:#731d30;letter-spacing:1px;margin-top:2px}
+.intro-source{display:inline-block;margin-top:18px;font-size:12px;font-weight:600;color:var(--burgundy)}

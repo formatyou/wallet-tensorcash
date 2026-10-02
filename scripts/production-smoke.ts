@@ -44,6 +44,7 @@ for (const [name, browserType] of Object.entries({ chromium, firefox, webkit }))
     expect(await page.evaluate(() => isSecureContext && !!crypto.subtle)).toBe(true);
     await expect(page.getByRole('heading', { name: 'A simple home for your TensorCash.', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: /^Create a wallet/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: /^Review the source/ })).toHaveAttribute('href', 'https://github.com/formatyou/wallet-tensorcash');
     const widths: number[] = [];
     for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 900 });
