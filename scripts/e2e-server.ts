@@ -12,7 +12,7 @@ const app = await buildApp({
   network: 'regtest', rpcUrl: 'http://127.0.0.1:19453', cookieFile: REGTEST_COOKIE,
   allowedOrigins: ['http://127.0.0.1:4173'], staticDir,
   allowWatchWalletCreation: true, watchWallet: 'wallet-web-watch',
-  maxTipAgeSeconds: 86400, requestTimeoutMs: 30000, logger: false,
+  requestTimeoutMs: 30000, logger: false,
   // Exercise the public wallet's two-confirmation policy on isolated coins.
   minConfirmations: 2,
   // This isolated loopback test process runs several browser profiles in sequence.

@@ -19,7 +19,6 @@ export function configFromEnvironment(env: NodeJS.ProcessEnv = process.env): { c
     requireRelease: env.NODE_ENV !== 'development' && env.NODE_ENV !== 'test',
     watchWallet: env.WALLET_WATCH_WALLET || 'wallet-web-watch', allowWatchWalletCreation: network === 'regtest' && env.WALLET_ALLOW_WATCH_CREATION === 'true',
     expectedGenesis: env.WALLET_GENESIS_HASH || (network === 'mainnet' ? MAINNET_GENESIS : REGTEST_GENESIS),
-    maxTipAgeSeconds: positive('WALLET_MAX_TIP_AGE', network === 'mainnet' ? 7200 : 86400),
     minConfirmations: positive('WALLET_MIN_CONFIRMATIONS', network === 'mainnet' ? 2 : 1), coinbaseMaturity: 100,
     maximumFeeUnits: env.WALLET_MAX_FEE_UNITS || '1000000', maximumFeeRate: env.WALLET_MAX_FEE_RATE || '100',
     requestTimeoutMs: positive('WALLET_RPC_TIMEOUT_MS', 10000), maxHistoryPages: positive('WALLET_MAX_HISTORY_PAGES', 20),

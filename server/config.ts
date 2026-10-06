@@ -8,7 +8,7 @@ export interface GatewayConfig {
   rpcUsername?: string; rpcPassword?: string;
   explorerUrl?: string; seedUrl?: string; allowedOrigins: string[];
   staticDir?: string; requireRelease?: boolean; watchWallet?: string; allowWatchWalletCreation?: boolean;
-  expectedGenesis?: string; maxTipAgeSeconds?: number; minConfirmations?: number;
+  expectedGenesis?: string; minConfirmations?: number;
   coinbaseMaturity?: number; maximumFeeUnits?: string; maximumFeeRate?: string;
   requestTimeoutMs?: number; maxHistoryPages?: number; maxHistoryTransactions?: number;
   maxWatchedAddresses?: number; logger?: boolean; rpc?: Rpc; fetch?: typeof fetch;
@@ -17,7 +17,7 @@ export interface GatewayConfig {
 }
 export type ResolvedConfig = GatewayConfig & {
   explorerUrl: string; seedUrl: string; watchWallet: string; expectedGenesis: string;
-  maxTipAgeSeconds: number; minConfirmations: number; coinbaseMaturity: number;
+  minConfirmations: number; coinbaseMaturity: number;
   maximumFeeUnits: string; maximumFeeRate: string; requestTimeoutMs: number;
   maxHistoryPages: number; maxHistoryTransactions: number; maxWatchedAddresses: number;
   maxMempoolTransactions: number; maxMempoolHexCharacters: number; maxMempoolEdges: number;
@@ -26,7 +26,6 @@ export function resolveConfig(input: GatewayConfig): ResolvedConfig {
   const config: ResolvedConfig = {
     explorerUrl: 'https://tscscan.xyz', seedUrl: 'https://mempool.tensorcash.org',
     watchWallet: 'wallet-web-watch', expectedGenesis: input.network === 'mainnet' ? MAINNET_GENESIS : REGTEST_GENESIS,
-    maxTipAgeSeconds: input.network === 'mainnet' ? 7200 : 86400,
     minConfirmations: input.network === 'mainnet' ? 2 : 1, coinbaseMaturity: 100, maximumFeeUnits: '1000000', maximumFeeRate: '100',
     requestTimeoutMs: 10000, maxHistoryPages: 20, maxHistoryTransactions: 500, maxWatchedAddresses: 10000,
     maxMempoolTransactions: 5000, maxMempoolHexCharacters: 16_000_000, maxMempoolEdges: 20 * (input.maxMempoolTransactions ?? 5000),
@@ -41,7 +40,7 @@ export function resolveConfig(input: GatewayConfig): ResolvedConfig {
   if (!/^[0-9a-f]{64}$/.test(config.expectedGenesis)) throw new Error('Invalid genesis');
   if (config.expectedGenesis !== (config.network === 'mainnet' ? MAINNET_GENESIS : REGTEST_GENESIS)) throw new Error('Genesis differs from supported network');
   if (!config.allowedOrigins.length || config.allowedOrigins.some(o => new URL(o).origin !== o)) throw new Error('Explicit canonical allowed origins required');
-  for (const n of [config.maxTipAgeSeconds, config.minConfirmations, config.coinbaseMaturity, config.requestTimeoutMs, config.maxHistoryPages, config.maxHistoryTransactions, config.maxWatchedAddresses, config.maxMempoolTransactions, config.maxMempoolHexCharacters, config.maxMempoolEdges]) {
+  for (const n of [config.minConfirmations, config.coinbaseMaturity, config.requestTimeoutMs, config.maxHistoryPages, config.maxHistoryTransactions, config.maxWatchedAddresses, config.maxMempoolTransactions, config.maxMempoolHexCharacters, config.maxMempoolEdges]) {
     if (!Number.isSafeInteger(n) || n <= 0) throw new Error('Invalid gateway limit');
   }
   if (config.maxHistoryPages > 100 || config.maxHistoryTransactions > 5000 || config.requestTimeoutMs > 60000 || config.maxWatchedAddresses > 100000) throw new Error('Gateway limit exceeds hard bound');

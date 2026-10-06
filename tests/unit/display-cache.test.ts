@@ -70,7 +70,9 @@ describe('encrypted last verified wallet display', () => {
     for (const changed of [{ ...metadata, id: crypto.randomUUID() }, { ...metadata, network: 'mainnet' as const },
       { ...metadata, accountXpub: foreignMetadata.accountXpub }]) expect(await decryptDisplayCache(json, changed, sealed.key, sealed.envelope.salt)).toBeNull();
     expect(await decryptDisplayCache(json, metadata, sealed.key, '00'.repeat(16))).toBeNull();
-    const parsed = JSON.parse(json); parsed.ciphertext = '00' + parsed.ciphertext.slice(2);
+    const parsed = JSON.parse(json); const original = parsed.ciphertext as string;
+    parsed.ciphertext = (Number.parseInt(original.slice(0, 2), 16) ^ 1).toString(16).padStart(2, '0') + original.slice(2);
+    expect(parsed.ciphertext).not.toBe(original);
     expect(await decryptDisplayCache(JSON.stringify(parsed), metadata, sealed.key, sealed.envelope.salt)).toBeNull();
     expect(await decryptDisplayCache('invalid JSON', metadata, sealed.key, sealed.envelope.salt)).toBeNull();
     expect(await decryptDisplayCache('x'.repeat(MAX_DISPLAY_CACHE_BYTES * 3), metadata, sealed.key, sealed.envelope.salt)).toBeNull();

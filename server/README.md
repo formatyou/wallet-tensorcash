@@ -25,6 +25,18 @@ Core checks current outpoints and independently classifies native raw parents.
 Seed raw fallback is identity-checked locally. A missing/pruned raw parent is
 unverified and cannot be spent. Unknown extension flags/assets/ICU are excluded.
 
+Readiness depends on freshly checked observations and exact accepted-chain/index
+alignment, not on how recently a block was mined. An unchanged chain can still
+supply balances and accept transactions into Core's mempool. A fresh explorer
+status (`checked_at` within 30 seconds), zero lag, matching accepted height/hash,
+completed initial synchronization and full effective-work verification may
+override only the known block-age and pending-header advisories. Unknown or
+additional warnings, stale status, mismatched tips and incomplete history still
+fail closed. Block age remains visible in `lastBlockTime`; it neither creates
+confirmations nor makes cached balances spendable. Future block timestamps beyond
+the two-hour sanity tolerance remain rejected. `WALLET_MAX_TIP_AGE` is retired;
+setting that former environment variable no longer imposes a mining-age limit.
+
 Two before/after Core mempool fingerprints and chain/index tip checks detect
 snapshot races. `complete: false` must block discovery/send and trigger a bounded
 client retry. An unchanged fingerprint does not independently prove explorer
@@ -60,8 +72,8 @@ returns an explicit error instead of an oversized or silently truncated view.
 
 Network responses optionally include `readinessReason`: `block-validation`,
 `node-sync`, `index-sync`, `index-unavailable` or `stale-data`. These explain a
-failed readiness check. Genesis, chain, initial-download, accepted-tip age,
-index-height/hash and provider freshness requirements remain mandatory. Older responses without
+failed readiness check. Genesis, chain, initial-download, future-timestamp sanity,
+index-height/hash and observation freshness requirements remain mandatory. Older responses without
 the reason remain supported. The browser probes readiness every five seconds
 while a known readiness gate is pending, using the network endpoint rather than
 repeated address scans. Transport failures back off to 30 seconds; successful
@@ -72,12 +84,16 @@ recovery work. Fees are read while the address view is verified.
 New headers awaiting external block validation do not invalidate Core's accepted
 chain. `pendingValidationBlocks` reports this backlog without increasing the
 accepted height or any confirmation count. An explorer `ready: false` response
-is usable only in the captured validation-only state: its index exactly matches
-Core's accepted height/hash, lag is zero, Core is online and outside initial
-download, work readiness is true, header counts agree, verification progress is
-one, the tip is fresh, and the only warning is the known Core synchronization
-warning. Every address-history page must satisfy the same conditions. Index lag,
-forks, ambiguous states, other warnings and stale data still block sending.
+is usable only with the known block-age advisory, the legitimate pending-header
+advisory, or both: its index exactly matches Core's accepted height/hash, lag is
+zero, Core is online and outside initial download, work readiness is true,
+header counts agree, verification progress is one, and its status observation is
+fresh. A synchronization advisory without pending headers is not accepted.
+Every address-history page must satisfy the same conditions. Index lag, forks,
+ambiguous states, other warnings and stale observations still block sending.
+There is no independent count/duration limit on the pending-header backlog;
+this is an accepted-tip view, not proof that external block validation is making
+progress or that pending blocks will preserve its UTXOs.
 Current outpoints, native raw parents, confirmations and Core's mempool policy
 are checked before publication; the accepted tip must remain unchanged.
 
@@ -127,7 +143,7 @@ Environment: `WALLET_NETWORK`, `WALLET_HOST`, `WALLET_PORT`,
 `WALLET_ALLOWED_ORIGINS` (comma-separated exact origins), `WALLET_STATIC_DIR`,
 `CORE_RPC_URL`, `CORE_COOKIE_FILE` (or server-only `CORE_RPC_USER` and
 `CORE_RPC_PASSWORD`), `WALLET_EXPLORER_URL`, `WALLET_SEED_URL`,
-`WALLET_GENESIS_HASH`, `WALLET_MAX_TIP_AGE`, `WALLET_MIN_CONFIRMATIONS`,
+`WALLET_GENESIS_HASH`, `WALLET_MIN_CONFIRMATIONS`,
 `WALLET_MAX_FEE_UNITS`, `WALLET_MAX_FEE_RATE`, `WALLET_RPC_TIMEOUT_MS`,
 `WALLET_MAX_HISTORY_PAGES`, `WALLET_MAX_HISTORY_TRANSACTIONS`,
 `WALLET_MAX_MEMPOOL_TRANSACTIONS`, `WALLET_MAX_MEMPOOL_HEX_CHARACTERS`,

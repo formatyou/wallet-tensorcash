@@ -12,7 +12,20 @@ current Core mempool, verifies native parent transaction bytes and identities,
 and checks each outpoint against Core with mempool inclusion. It compares chain
 and index tips and mempool observations before returning a complete snapshot.
 Missing data, unsupported extensions, stale observations, races and bounded
-history limits fail closed for new spending.
+history limits fail closed for new spending. Observation freshness is separate
+from block age: a pause in mining does not invalidate an unchanged accepted tip,
+its existing confirmations or a freshly checked mempool. The explorer's known
+block-age advisory alone does not block balances or publication when its status
+was checked within 30 seconds and its complete index matches Core's accepted
+height/hash. Explicit pending-header advisories can coexist with that warning;
+unknown warnings, unavailable providers and inconsistent history still block.
+The wallet adds no maximum-age cutoff for the last block, but both providers
+must still report completed initial synchronization and the required work
+readiness. A Core/provider restart during a long gap can re-enter initial block
+download; this fix does not bypass that state or change Core's own heuristics.
+A transaction can enter the mempool before the next block, but acceptance does
+not guarantee propagation, inclusion in the next block or any particular
+confirmation time.
 
 The signer separately decodes native parent transactions, recomputes their
 txids and checks amounts, scripts, owned derivations and change against the

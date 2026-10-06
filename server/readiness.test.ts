@@ -28,6 +28,20 @@ describe('network readiness diagnostics retain strict freshness and chain gates'
     const info = await fixture().gateway.network();
     expect(info.ready).toBe(true); expect(info.readinessReason).toBeUndefined();
   });
+  it.each([2600, 7201, 86400, 7 * 86400])('keeps a freshly observed accepted chain usable after a %i-second block gap', async tipAge => {
+    for (const headers of [200, 201]) {
+      const info = await fixture({ time: now() - tipAge, core: { headers }, index: {
+        ready: false, state: 'syncing', effective_work_ready: true, core_height: 200, core_headers: headers,
+        verification_progress: 1, tip_age_seconds: tipAge,
+        warnings: headers > 200 ? ['TensorCash Core is still synchronizing the chain.', 'The Core chain tip is older than 30 minutes.'] : ['The Core chain tip is older than 30 minutes.'],
+      } }).gateway.network();
+      expect(info).toMatchObject({ ready: true, height: 200, indexedHeight: 200, tipHash: TIP });
+      expect(info.readinessReason).toBeUndefined();
+    }
+  });
+  it('does not infer unavailable data from an old block when the explorer reports ready', async () => {
+    expect((await fixture({ time: now() - 7 * 86400 }).gateway.network()).ready).toBe(true);
+  });
   it.each([
     ['ambiguous index readiness while new headers await validation', { core: { headers: 201 }, index: { ready: false } }, 'block-validation'],
     ['initial node sync', { core: { initialblockdownload: true, headers: 300 } }, 'node-sync'],
@@ -40,7 +54,7 @@ describe('network readiness diagnostics retain strict freshness and chain gates'
     ['invalid index data', { index: { checked_at: 'invalid' } }, 'index-unavailable'],
     ['stale index check', { index: { checked_at: now() - 31 } }, 'stale-data'],
     ['future index check', { index: { checked_at: now() + 32 } }, 'stale-data'],
-    ['stale node tip', { time: now() - 7201 }, 'stale-data'],
+    ['invalid zero node timestamp', { time: 0 }, 'stale-data'],
     ['future node tip', { time: now() + 7202 }, 'stale-data'],
   ] as const)('describes %s and refuses transfer validation before touching its inputs', async (_name, options, reason) => {
     const { gateway, calls } = fixture(options);
@@ -67,7 +81,7 @@ describe('network readiness diagnostics retain strict freshness and chain gates'
   it.each([
     { index: { indexed_height: 201 } }, { index: { indexed_tip: 'b'.repeat(64) } },
     { index: { checked_at: now() - 31 } }, { index: { initial_block_download: true } },
-    { core: { initialblockdownload: true } }, { time: now() - 7201 },
+    { core: { initialblockdownload: true } }, { time: now() + 7202 },
   ])('never lets pending validation bypass an index, identity, initial sync or freshness gate', async options => {
     const { gateway, calls } = fixture({ ...options, core: { headers: 205, ...options.core } });
     expect((await gateway.network()).ready).toBe(false);

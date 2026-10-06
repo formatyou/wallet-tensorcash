@@ -67,7 +67,9 @@ export class Gateway {
     // New headers do not invalidate Core's already accepted chain. Use only
     // that accepted tip, still requiring the explorer to be ready on its exact
     // height/hash before exposing balances or validating any spend.
-    let ready = info.initialblockdownload === false && headers >= height && tipTime <= now + 7200 && now - tipTime <= this.config.maxTipAgeSeconds;
+    // Fresh RPC/index observations, not mining cadence, determine usability.
+    // Keep the future-timestamp sanity check; old blocks alone do not stop TXs.
+    let ready = info.initialblockdownload === false && headers >= height && tipTime > 0 && tipTime <= now + 7200;
     let readinessReason: NetworkReadinessReason | undefined;
     if (info.initialblockdownload !== false) readinessReason = 'node-sync';
     else if (headers < height) readinessReason = 'node-sync';
@@ -77,7 +79,7 @@ export class Gateway {
       try { const index = record(await this.publicGet('/api/status'));
         indexedHeight = integer(index.indexed_height);
         const lag = integer(index.lag_blocks); const indexedTip = hash(index.indexed_tip); const checked = integer(index.checked_at);
-        const indexReady = indexSupportsAcceptedTip(index, { height, hash: tipHash, headers }, now, this.config.maxTipAgeSeconds);
+        const indexReady = indexSupportsAcceptedTip(index, { height, hash: tipHash, headers }, now);
         const indexFresh = Math.abs(now - checked) <= 30;
         if (!readinessReason) {
           if (index.core_online !== true) readinessReason = 'index-unavailable';
@@ -319,7 +321,7 @@ export class Gateway {
         catch { complete = false; warnings.push('Address history is unavailable; discovery is incomplete.'); break; }
         const index = record(payload.status);
         if (!indexSupportsAcceptedTip(index, { height: network.height, hash: network.tipHash,
-          headers: network.height + (network.pendingValidationBlocks ?? 0) }, Math.floor(Date.now() / 1000), this.config.maxTipAgeSeconds)) {
+          headers: network.height + (network.pendingValidationBlocks ?? 0) }, Math.floor(Date.now() / 1000))) {
           complete = false; warnings.push('Address index changed during synchronization.');
         }
         const txs = array(payload.transactions, 200); const pagination = record(payload.pagination);

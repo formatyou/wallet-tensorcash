@@ -87,8 +87,8 @@ describe('gateway network and request boundary', () => {
     const app = await create(rpc); const result = await app.inject(post('/api/v1/wallet/sync', { addresses: [address] }));
     expect(result.statusCode).toBe(503); expect(rpc.calls.some(c => c.method === 'listtransactions')).toBe(false);
   });
-  it('returns incomplete empty snapshot for IBD or stale tip', async () => {
-    const handler = baseHandler(); const rpc = new MockRpc((m, p, w) => m === 'getblockheader' ? { time: now() - 90000 } : handler(m, p, w));
+  it('returns incomplete empty snapshot during initial block download', async () => {
+    const handler = baseHandler(); const rpc = new MockRpc((m, p, w) => m === 'getblockchaininfo' ? { chain: 'regtest', blocks: 200, headers: 300, bestblockhash: TIP, initialblockdownload: true } : handler(m, p, w));
     const app = await create(rpc); const result = await app.inject(post('/api/v1/wallet/sync', { addresses: [address] }));
     expect(result.statusCode).toBe(200); expect(result.json()).toMatchObject({ complete: false, utxos: [], network: { ready: false } });
   });
@@ -147,6 +147,12 @@ describe('confirmation policy', () => {
       expect(resolveConfig(environment).coinbaseMaturity).toBe(100);
     }
   });
+  it.each(['7200', '1', '0', 'invalid'])('ignores the retired mining-age environment setting %s', value => {
+    const environment = configFromEnvironment({ WALLET_MAX_TIP_AGE: value }).config;
+    expect(environment).not.toHaveProperty('maxTipAgeSeconds');
+    expect(resolveConfig(environment)).not.toHaveProperty('maxTipAgeSeconds');
+    expect(environment.minConfirmations).toBe(2);
+  });
   it('honors an explicit environment confirmation minimum and rejects zero', () => {
     const environment = configFromEnvironment({ WALLET_MIN_CONFIRMATIONS: '4' }).config;
     expect(resolveConfig(environment).minConfirmations).toBe(4);
@@ -175,6 +181,72 @@ describe('confirmation policy', () => {
     const response = await app.inject(post('/api/v1/tx/validate', { rawHex: CHILD_RAW }));
     expect(response.statusCode).toBe(200); expect(response.json().allowed).toBe(confirmations >= 100);
     expect(rpc.calls.some(call => call.method === 'testmempoolaccept')).toBe(confirmations >= 100);
+  });
+});
+
+describe('wallet operations during long block gaps', () => {
+  function gapFixture(tipAge: number, options: { status?: Record<string, unknown>; historyStatus?: Record<string, unknown>; spent?: boolean } = {}) {
+    const handler = baseHandler('mainnet');
+    const rpc = new MockRpc((m, p, w) => {
+      if (m === 'getblockheader') return { time: now() - tipAge };
+      if (m === 'gettxout' && (options.spent || p[0] !== PARENT.txid)) return null;
+      return handler(m, p, w);
+    });
+    const status = () => ({ ...indexStatus(), ready: false, state: 'syncing', core_height: 200, core_headers: 200,
+      effective_work_ready: true, verification_progress: 1, tip_age_seconds: tipAge,
+      warnings: ['The Core chain tip is older than 30 minutes.'], ...options.status });
+    const fetcher = (async input => {
+      const url = new URL(String(input));
+      if (url.pathname === '/api/status') return Response.json(status());
+      if (url.pathname === `/api/address/${mainAddress}`) return Response.json({ status: { ...status(), ...options.historyStatus },
+        pagination: { page: 1, total: 1, total_pages: 1, has_next: false },
+        transactions: [{ txid: PARENT.txid, block_height: 100, block_hash: TIP, delta_sats: 400000, fee_sats: 0, timestamp: now() - tipAge }] });
+      if (url.pathname === `/api/tx/${PARENT.txid}`) return Response.json({ transaction: { txid: PARENT.txid, is_coinbase: true, output_count: 1,
+        outputs: [{ address: mainAddress, vout_index: 0, value_sats: 400000, script_hex: OWN_SCRIPT }] } });
+      return new Response('{}', { status: 404 });
+    }) as typeof fetch;
+    return { rpc, fetcher };
+  }
+  it.each([2600, 7201, 86400, 7 * 86400])('reads balances and broadcasts through Core after a %i-second block gap', async tipAge => {
+    const { rpc, fetcher } = gapFixture(tipAge);
+    const app = await create(rpc, { network: 'mainnet', fetch: fetcher });
+    expect((await app.inject('/health')).statusCode).toBe(200);
+    expect((await app.inject('/api/v1/network')).json()).toMatchObject({ ready: true, height: 200, indexedHeight: 200 });
+    expect((await app.inject('/api/v1/fees')).statusCode).toBe(200);
+    const snapshot = await app.inject(post('/api/v1/wallet/sync', { addresses: [mainAddress] }));
+    expect(snapshot.statusCode).toBe(200);
+    expect(snapshot.json()).toMatchObject({ complete: true, network: { ready: true }, utxos: [{ txid: PARENT.txid, amountUnits: '400000', verified: true, confirmations: 101 }] });
+    expect((await app.inject(post('/api/v1/tx/validate', { rawHex: CHILD_RAW }))).json()).toMatchObject({ allowed: true, txid: CHILD.txid });
+    const broadcast = await app.inject(post('/api/v1/tx/broadcast', { rawHex: CHILD_RAW }));
+    expect(broadcast.statusCode).toBe(200); expect(broadcast.json()).toEqual({ txid: CHILD.txid, status: 'accepted' });
+    expect(rpc.calls.some(call => call.method === 'testmempoolaccept')).toBe(true);
+    expect(rpc.calls.filter(call => call.method === 'sendrawtransaction')).toHaveLength(1);
+  });
+  it.each([
+    { checked_at: now() - 31 }, { indexed_tip: 'b'.repeat(64) }, { lag_blocks: 1 },
+    { core_online: false }, { initial_block_download: true },
+    { warnings: ['The Core chain tip is older than 30 minutes.', 'Unknown provider failure'] },
+  ])('does not let an age-only warning bypass inconsistent observations: %j', async status => {
+    const { rpc, fetcher } = gapFixture(86400, { status });
+    const app = await create(rpc, { network: 'mainnet', fetch: fetcher });
+    expect((await app.inject('/health')).statusCode).toBe(503);
+    expect((await app.inject(post('/api/v1/tx/broadcast', { rawHex: CHILD_RAW }))).statusCode).toBe(503);
+    expect(rpc.calls.some(call => ['testmempoolaccept', 'sendrawtransaction'].includes(call.method))).toBe(false);
+  });
+  it.each([
+    { indexed_tip: 'b'.repeat(64) }, { checked_at: now() - 31 },
+    { warnings: ['The Core chain tip is older than 30 minutes.', 'Unknown history failure'] },
+  ])('still rejects an inconsistent address-history page during a long block gap: %j', async historyStatus => {
+    const { rpc, fetcher } = gapFixture(86400, { historyStatus });
+    const app = await create(rpc, { network: 'mainnet', fetch: fetcher });
+    expect((await app.inject(post('/api/v1/wallet/sync', { addresses: [mainAddress] }))).json().complete).toBe(false);
+  });
+  it('still prevents broadcasting a spent input during a long block gap', async () => {
+    const { rpc, fetcher } = gapFixture(86400, { spent: true });
+    const app = await create(rpc, { network: 'mainnet', fetch: fetcher });
+    const result = await app.inject(post('/api/v1/tx/broadcast', { rawHex: CHILD_RAW }));
+    expect(result.statusCode).toBe(503); expect(result.json().error.code).toBe('transaction-state-unknown');
+    expect(rpc.calls.some(call => call.method === 'sendrawtransaction')).toBe(false);
   });
 });
 
