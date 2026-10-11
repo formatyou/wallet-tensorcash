@@ -6,6 +6,7 @@ import { RpcError } from './errors';
 import { Gateway } from './gateway';
 import type { Rpc } from './rpc';
 import { decodeNativeTransaction } from '../src/core/raw';
+import { indexFetch } from './test-index';
 import { networkConfig } from '../src/core/network';
 
 // Call-cost regression harness: how many Core RPC calls and explorer fetches one
@@ -30,17 +31,17 @@ const BASELINE = {
     warm: { rpc: 108, explorer: 102, methods: { getblockchaininfo: 2, getblockhash: 2, getblockheader: 2, getrawmempool: 2, validateaddress: 100 }, routes: { status: 2, address: 100 } },
   },
   'A=100, N=50, U=10': {
-    cold: { rpc: 368, explorer: 152, methods: { getblockchaininfo: 2, getblockhash: 52, getblockheader: 2, getrawmempool: 2, validateaddress: 100, getrawtransaction: 100, decodeassettransaction: 60, gettxout: 50 }, routes: { status: 2, address: 100, tx: 50 } },
-    warm: { rpc: 318, explorer: 152, methods: { getblockchaininfo: 2, getblockhash: 52, getblockheader: 2, getrawmempool: 2, validateaddress: 100, getrawtransaction: 50, decodeassettransaction: 60, gettxout: 50 }, routes: { status: 2, address: 100, tx: 50 } },
+    cold: { rpc: 368, explorer: 102, methods: { getblockchaininfo: 2, getblockhash: 52, getblockheader: 2, getrawmempool: 2, validateaddress: 100, getrawtransaction: 100, decodeassettransaction: 60, gettxout: 50 }, routes: { status: 2, address: 100 } },
+    warm: { rpc: 318, explorer: 102, methods: { getblockchaininfo: 2, getblockhash: 52, getblockheader: 2, getrawmempool: 2, validateaddress: 100, getrawtransaction: 50, decodeassettransaction: 60, gettxout: 50 }, routes: { status: 2, address: 100 } },
   },
   // More transactions than the 256-entry raw cache holds: it thrashes, so the warm sync saves almost nothing.
   'A=100, N=300, U=10': {
-    cold: { rpc: 1628, explorer: 404, methods: { getblockchaininfo: 2, getblockhash: 302, getblockheader: 2, getrawmempool: 2, validateaddress: 100, getrawtransaction: 610, decodeassettransaction: 310, gettxout: 300 }, routes: { status: 2, address: 102, tx: 300 } },
-    warm: { rpc: 1618, explorer: 404, methods: { getblockchaininfo: 2, getblockhash: 302, getblockheader: 2, getrawmempool: 2, validateaddress: 100, getrawtransaction: 600, decodeassettransaction: 310, gettxout: 300 }, routes: { status: 2, address: 102, tx: 300 } },
+    cold: { rpc: 1628, explorer: 104, methods: { getblockchaininfo: 2, getblockhash: 302, getblockheader: 2, getrawmempool: 2, validateaddress: 100, getrawtransaction: 610, decodeassettransaction: 310, gettxout: 300 }, routes: { status: 2, address: 102 } },
+    warm: { rpc: 1618, explorer: 104, methods: { getblockchaininfo: 2, getblockhash: 302, getblockheader: 2, getrawmempool: 2, validateaddress: 100, getrawtransaction: 600, decodeassettransaction: 310, gettxout: 300 }, routes: { status: 2, address: 102 } },
   },
   'A=100, N=50, U=10, one pending spend of a wallet coin': {
-    cold: { rpc: 370, explorer: 152, methods: { getblockchaininfo: 2, getblockhash: 52, getblockheader: 2, getrawmempool: 2, validateaddress: 100, getrawtransaction: 101, decodeassettransaction: 61, gettxout: 49, getmempoolentry: 1 }, routes: { status: 2, address: 100, tx: 50 } },
-    warm: { rpc: 319, explorer: 152, methods: { getblockchaininfo: 2, getblockhash: 52, getblockheader: 2, getrawmempool: 2, validateaddress: 100, getrawtransaction: 50, decodeassettransaction: 61, gettxout: 49, getmempoolentry: 1 }, routes: { status: 2, address: 100, tx: 50 } },
+    cold: { rpc: 370, explorer: 102, methods: { getblockchaininfo: 2, getblockhash: 52, getblockheader: 2, getrawmempool: 2, validateaddress: 100, getrawtransaction: 101, decodeassettransaction: 61, gettxout: 49, getmempoolentry: 1 }, routes: { status: 2, address: 100 } },
+    warm: { rpc: 319, explorer: 102, methods: { getblockchaininfo: 2, getblockhash: 52, getblockheader: 2, getrawmempool: 2, validateaddress: 100, getrawtransaction: 50, decodeassettransaction: 61, gettxout: 49, getmempoolentry: 1 }, routes: { status: 2, address: 100 } },
   },
   // Every mempool transaction is read once per gateway process, whoever it belongs to.
   'gateway restart, fresh wallet, A=100, mempool of 360 unrelated transactions': {
@@ -130,19 +131,12 @@ function world(scenario: Scenario) {
     }
   });
   const fetches: string[] = [];
-  const indexStatus = () => ({ ready: true, core_online: true, initial_block_download: false, indexed_height: HEIGHT, indexed_tip: TIP, lag_blocks: 0, checked_at: now() });
-  const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200 });
-  const explorer = (async input => {
-    const url = new URL(String(input)); const [, route, id, extra] = url.pathname.split('/').slice(1);
-    fetches.push(extra === undefined && ['status', 'address', 'tx'].includes(route) ? route : url.pathname);
-    if (url.pathname === '/api/status') return json(indexStatus());
-    if (route === 'address' && extra === undefined) {
-      const rows = id === wallet[0].address ? [...confirmed.values()].map(({ tx, height }) => ({ txid: tx.txid, block_height: height, block_hash: blockHash(height), delta_sats: Number(tx.outputs[0].amountUnits), fee_sats: 100, timestamp: tipTime - (HEIGHT - height) * 600 })) : [];
-      const page = Number(url.searchParams.get('page')); const size = Number(url.searchParams.get('page_size'));
-      return json({ status: indexStatus(), transactions: rows.slice((page - 1) * size, page * size), pagination: { page, has_next: page * size < rows.length, total: rows.length, total_pages: Math.ceil(rows.length / size) } });
-    }
-    const tx = route === 'tx' && extra === undefined ? confirmed.get(id) : undefined; if (!tx) return new Response('{}', { status: 404 });
-    return json({ transaction: { txid: tx.tx.txid, is_coinbase: false, block_height: tx.height, block_hash: blockHash(tx.height), output_count: 1, outputs: [{ address: wallet[0].address, vout_index: 0, value_sats: Number(tx.tx.outputs[0].amountUnits), script_hex: wallet[0].scriptHex }] } });
+  const index = indexFetch({ tip: { height: HEIGHT, hash: TIP }, history: { [wallet[0].address]: [...confirmed.values()].map(({ tx, height }) =>
+    ({ txid: tx.txid, height, blockHash: blockHash(height), delta: Number(tx.outputs[0].amountUnits), fee: 100, time: tipTime - (HEIGHT - height) * 600 })) } });
+  const explorer = (async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    fetches.push(path === '/v1/status' ? 'status' : /^\/v1\/addresses\/[^/]+\/transactions$/.test(path) ? 'address' : /^\/v1\/transactions\/[0-9a-f]{64}$/.test(path) ? 'tx' : path);
+    return index(input, init);
   }) as typeof fetch;
   return {
     rpc, explorer, addresses: wallet.map(entry => entry.address),

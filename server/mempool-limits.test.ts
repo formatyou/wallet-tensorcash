@@ -6,6 +6,7 @@ import { RpcError } from './errors';
 import { configFromEnvironment } from './index';
 import type { Rpc } from './rpc';
 import { decodeNativeTransaction } from '../src/core/raw';
+import { indexFetch } from './test-index';
 
 const TIP = 'a'.repeat(64);
 const OWN_SCRIPT = `0014${'1'.repeat(40)}`;
@@ -24,13 +25,7 @@ function unrelated(n: number) {
   const raw = `0200000001${uint(n + 1, 4).padEnd(64, 'c')}0000000000ffffffff01${uint(1000 + n, 8)}16${OTHER_SCRIPT}00000000`; const tx = decodeNativeTransaction(raw);
   return { txid: tx.txid, hex: raw, vin: tx.inputs.map(i => ({ txid: i.txid, vout: i.vout })), vout: tx.outputs.map(o => ({ n: o.vout, value: (Number(o.amountUnits) / 1e8).toFixed(8), scriptPubKey: { hex: o.scriptHex } })) };
 }
-const indexStatus = () => ({ ready: true, core_online: true, initial_block_download: false, indexed_height: 200, indexed_tip: TIP, lag_blocks: 0, checked_at: now() });
-const emptyIndex = { status: indexStatus(), pagination: { page: 1, total: 0, total_pages: 0, has_next: false }, transactions: [] };
-const explorer = (async input => {
-  const url = new URL(String(input)); if (url.pathname === '/api/status') return new Response(JSON.stringify(indexStatus()), { status: 200 });
-  if (url.pathname === `/api/address/${mainAddress}`) return new Response(JSON.stringify(emptyIndex), { status: 200 });
-  return new Response('{}', { status: 404 });
-}) as typeof fetch;
+const explorer = indexFetch({ history: { [mainAddress]: [] } });
 const opened: FastifyInstance[] = [];
 afterEach(async () => { await Promise.all(opened.splice(0).map(app => app.close())); });
 async function setup(transactions: number | ReturnType<typeof unrelated>[], extra: Partial<GatewayConfig> = {}) {

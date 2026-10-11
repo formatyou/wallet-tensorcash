@@ -6,7 +6,7 @@ export const REGTEST_GENESIS = 'cf63c021e5a8ea0bc04cf7b12ab12e0a7902ef2dae5bdd8c
 export interface GatewayConfig {
   network: WalletNetwork; rpcUrl: string; cookieFile?: string;
   rpcUsername?: string; rpcPassword?: string;
-  explorerUrl?: string; seedUrl?: string; allowedOrigins: string[];
+  explorerUrl?: string; indexUrl?: string; seedUrl?: string; allowedOrigins: string[];
   staticDir?: string; requireRelease?: boolean; watchWallet?: string; allowWatchWalletCreation?: boolean;
   expectedGenesis?: string; minConfirmations?: number;
   coinbaseMaturity?: number; maximumFeeUnits?: string; maximumFeeRate?: string;
@@ -16,7 +16,7 @@ export interface GatewayConfig {
   syncRateLimit?: number; rateLimit?: number;
 }
 export type ResolvedConfig = GatewayConfig & {
-  explorerUrl: string; seedUrl: string; watchWallet: string; expectedGenesis: string;
+  explorerUrl: string; indexUrl: string; seedUrl: string; watchWallet: string; expectedGenesis: string;
   minConfirmations: number; coinbaseMaturity: number;
   maximumFeeUnits: string; maximumFeeRate: string; requestTimeoutMs: number;
   maxHistoryPages: number; maxHistoryTransactions: number; maxWatchedAddresses: number;
@@ -24,7 +24,7 @@ export type ResolvedConfig = GatewayConfig & {
 };
 export function resolveConfig(input: GatewayConfig): ResolvedConfig {
   const config: ResolvedConfig = {
-    explorerUrl: 'https://tscscan.xyz', seedUrl: 'https://mempool.tensorcash.org',
+    explorerUrl: 'https://tscscan.xyz', indexUrl: 'https://api.tscscan.xyz', seedUrl: 'https://mempool.tensorcash.org',
     watchWallet: 'wallet-web-watch', expectedGenesis: input.network === 'mainnet' ? MAINNET_GENESIS : REGTEST_GENESIS,
     minConfirmations: input.network === 'mainnet' ? 2 : 1, coinbaseMaturity: 100, maximumFeeUnits: '1000000', maximumFeeRate: '100',
     requestTimeoutMs: 10000, maxHistoryPages: 20, maxHistoryTransactions: 500, maxWatchedAddresses: 10000,
@@ -32,7 +32,7 @@ export function resolveConfig(input: GatewayConfig): ResolvedConfig {
     ...input,
   };
   if (!['mainnet', 'regtest'].includes(config.network)) throw new Error('Unsupported gateway network');
-  for (const value of [config.rpcUrl, config.explorerUrl, config.seedUrl]) {
+  for (const value of [config.rpcUrl, config.explorerUrl, config.indexUrl, config.seedUrl]) {
     const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('Invalid provider URL');
     if (url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) throw new Error('Remote providers require HTTPS');

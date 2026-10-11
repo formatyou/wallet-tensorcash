@@ -5,6 +5,7 @@ import { MAINNET_GENESIS } from './config';
 import { RpcError } from './errors';
 import type { Rpc } from './rpc';
 import { decodeNativeTransaction } from '../src/core/raw';
+import { indexFetch } from './test-index';
 
 const TIP = 'a'.repeat(64);
 const OWN_SCRIPT = `0014${'1'.repeat(40)}`;
@@ -51,17 +52,9 @@ function baseHandler(): Handler {
     }
   };
 }
-const indexStatus = () => ({ ready: true, core_online: true, initial_block_download: false, indexed_height: 200, indexed_tip: TIP, lag_blocks: 0, checked_at: now() });
-function explorerFetch(routes: Record<string, unknown>): typeof fetch {
-  return (async input => {
-    const url = new URL(String(input)); if (url.pathname === '/api/status') return new Response(JSON.stringify(indexStatus()), { status: 200 });
-    if (!(url.pathname in routes)) return new Response('{}', { status: 404 });
-    return new Response(JSON.stringify(routes[url.pathname]), { status: 200 });
-  }) as typeof fetch;
-}
-const explorer = () => explorerFetch({
-  [`/api/address/${mainAddress}`]: { status: indexStatus(), pagination: { page: 1, total: 1, total_pages: 1, has_next: false }, transactions: [{ txid: V.txid, block_height: 199, block_hash: TIP, delta_sats: 399800, fee_sats: 200, timestamp: now() - 100 }] },
-  [`/api/tx/${V.txid}`]: { transaction: { txid: V.txid, is_coinbase: false, output_count: 1, block_height: 199, block_hash: TIP, outputs: [{ address: mainAddress, vout_index: 0, value_sats: 399800, script_hex: OWN_SCRIPT }] } },
+const explorer = () => indexFetch({
+  history: { [mainAddress]: [{ txid: V.txid, height: 199, delta: 399800, fee: 200, time: now() - 100 }] },
+  transactions: { [V.txid]: { height: 199, hash: TIP } },
 });
 const opened: FastifyInstance[] = [];
 async function create(rpc: Rpc) { const app = await buildApp({ network: 'mainnet', rpcUrl: 'http://127.0.0.1:39242', allowedOrigins: ['https://wallet.example'], rpc, fetch: explorer() }); opened.push(app); return app; }

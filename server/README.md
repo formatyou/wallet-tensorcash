@@ -19,20 +19,24 @@ provides an arbitrary RPC relay. Request and RPC-body logging are disabled.
 Defaults are mainnet (`tensor`), RPC `127.0.0.1:39242`, server `127.0.0.1:8790`,
 two confirmations, coinbase maturity 100, absolute fee cap 1,000,000 atomic units
 and rate cap 100 units/vbyte. Configure an explicit private cookie path or
-server-only RPC credentials. Mainnet uses TSCScan for paginated confirmed history and own Core
-for authoritative pending history, incoming outputs, outgoing spends and change.
+server-only RPC credentials. Mainnet uses the TSCScan v1 API (`https://api.tscscan.xyz`) for
+paginated confirmed address history, pinned to Core's accepted tip with the
+`X-Chain-Height`/`X-Chain-Hash` request headers (a moved index answers 409 and the
+sync is incomplete), and own Core for confirmed outputs and spends (from the
+canonical block's raw bytes), authoritative pending history, incoming outputs,
+outgoing spends and change. `WALLET_EXPLORER_URL` only builds transaction links.
 Core checks current outpoints and independently classifies native raw parents.
 Seed raw fallback is identity-checked locally. A missing/pruned raw parent is
 unverified and cannot be spent. Unknown extension flags/assets/ICU are excluded.
 
 Readiness depends on freshly checked observations and exact accepted-chain/index
 alignment, not on how recently a block was mined. An unchanged chain can still
-supply balances and accept transactions into Core's mempool. A fresh explorer
-status (`checked_at` within 30 seconds), zero lag, matching accepted height/hash,
-completed initial synchronization and full effective-work verification may
-override only the known block-age and pending-header advisories. Unknown or
-additional warnings, stale status, mismatched tips and incomplete history still
-fail closed. Block age remains visible in `lastBlockTime`; it neither creates
+supply balances and accept transactions into Core's mempool. The index
+(`/v1/status`) must have polled its node within 30 seconds, be outside initial
+download, report `sync_state: ready` and complete block, transaction and address
+coverage, and its response chain tip must equal Core's accepted height/hash. Any
+other state, stale status, mismatched tips and incomplete history still fail
+closed. Block age remains visible in `lastBlockTime`; it neither creates
 confirmations nor makes cached balances spendable. Future block timestamps beyond
 the two-hour sanity tolerance remain rejected. `WALLET_MAX_TIP_AGE` is retired;
 setting that former environment variable no longer imposes a mining-age limit.
@@ -83,14 +87,11 @@ recovery work. Fees are read while the address view is verified.
 
 New headers awaiting external block validation do not invalidate Core's accepted
 chain. `pendingValidationBlocks` reports this backlog without increasing the
-accepted height or any confirmation count. An explorer `ready: false` response
-is usable only with the known block-age advisory, the legitimate pending-header
-advisory, or both: its index exactly matches Core's accepted height/hash, lag is
-zero, Core is online and outside initial download, work readiness is true,
-header counts agree, verification progress is one, and its status observation is
-fresh. A synchronization advisory without pending headers is not accepted.
-Every address-history page must satisfy the same conditions. Index lag, forks,
-ambiguous states, other warnings and stale observations still block sending.
+accepted height or any confirmation count. An index that is complete at the
+accepted tip but not `ready` is reported as `block-validation` while Core has
+pending headers (otherwise `index-sync`) and blocks sending. Every address-history
+page is anchored to the accepted tip. Index lag, forks, unknown states and stale
+observations still block sending.
 There is no independent count/duration limit on the pending-header backlog;
 this is an accepted-tip view, not proof that external block validation is making
 progress or that pending blocks will preserve its UTXOs.
@@ -142,7 +143,7 @@ publish the static frontend and `/api` under the same origin.
 Environment: `WALLET_NETWORK`, `WALLET_HOST`, `WALLET_PORT`,
 `WALLET_ALLOWED_ORIGINS` (comma-separated exact origins), `WALLET_STATIC_DIR`,
 `CORE_RPC_URL`, `CORE_COOKIE_FILE` (or server-only `CORE_RPC_USER` and
-`CORE_RPC_PASSWORD`), `WALLET_EXPLORER_URL`, `WALLET_SEED_URL`,
+`CORE_RPC_PASSWORD`), `WALLET_EXPLORER_URL`, `WALLET_INDEX_URL`, `WALLET_SEED_URL`,
 `WALLET_GENESIS_HASH`, `WALLET_MIN_CONFIRMATIONS`,
 `WALLET_MAX_FEE_UNITS`, `WALLET_MAX_FEE_RATE`, `WALLET_RPC_TIMEOUT_MS`,
 `WALLET_MAX_HISTORY_PAGES`, `WALLET_MAX_HISTORY_TRANSACTIONS`,

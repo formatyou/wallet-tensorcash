@@ -5,7 +5,7 @@ import type { ResolvedConfig } from './config';
 import type { Rpc } from './rpc';
 import { readBounded } from './rpc';
 import { GatewayError, RpcError, ensure } from './errors';
-import { indexSupportsAcceptedTip } from './index-readiness';
+import { indexReadiness, type IndexTip } from './index-readiness';
 import { array, atomic, coinUnits, feeRate, hash, integer, mapBounded, record, script, type RecordData } from './data';
 
 interface Candidate {
@@ -17,10 +17,13 @@ interface Collection { candidates: Candidate[]; history: HistoryEntry[]; used: S
 interface NativeParent { rawHex: string; decoded: NativeTransaction; }
 interface MempoolTransaction { txid: string; rawHex: string; inputs: { txid: string; vout: number }[]; outputs: { scriptHex: string; amount: bigint; vout: number }[]; }
 type BlockTiming = Pick<NetworkInfo, 'averageBlockSeconds' | 'blockTimeSampleSize'>;
+interface IndexResponse { data: unknown; page?: RecordData; tip: IndexTip | null; }
 const iso = () => new Date().toISOString();
 const key = (txid: string, vout: number) => `${txid}:${vout}`;
 const P2WPKH = /^0014[0-9a-f]{40}$/;
 const MAX_SPEND_EDGES = 100000;
+// Index amounts are {"precision": 8, "units": "<integer>"}.
+function indexAmount(value: unknown): bigint { const amount = record(value); ensure(amount.precision === 8); return atomic(amount.units); }
 function appendSpendEdges(target: SpentOutpoint[], seen: Set<string>, txid: string, inputs: { txid: string; vout: number }[]): boolean {
   let complete = true;
   for (const input of inputs) {
@@ -44,15 +47,34 @@ export class Gateway {
   private watchQueue: Promise<unknown> = Promise.resolve();
   constructor(readonly config: ResolvedConfig, readonly rpc: Rpc) {}
 
-  private async publicGet(path: string, seed = false): Promise<unknown> {
-    const url = new URL(path, `${(seed ? this.config.seedUrl : this.config.explorerUrl).replace(/\/$/, '')}/`);
+  private async publicGet(base: string, path: string, headers: Record<string, string> = {}): Promise<{ text: string; response: Response }> {
+    const url = new URL(path, `${base.replace(/\/$/, '')}/`);
     let response: Response;
-    try { response = await (this.config.fetch || fetch)(url, { headers: { Accept: 'application/json, text/plain' }, signal: AbortSignal.timeout(this.config.requestTimeoutMs), redirect: 'error' }); }
+    try { response = await (this.config.fetch || fetch)(url, { headers: { Accept: 'application/json, text/plain', ...headers }, signal: AbortSignal.timeout(this.config.requestTimeoutMs), redirect: 'error' }); }
     catch { throw new GatewayError('index-unavailable', 'Public chain provider is unavailable'); }
     if (response.status === 404) throw new GatewayError('not-found', 'Requested chain data is unavailable', 404);
+    if (response.status === 409) throw new GatewayError('index-changed', 'Public chain index no longer serves the requested chain tip');
     if (!response.ok) throw new GatewayError('index-unavailable', 'Public chain provider is unavailable');
-    const text = await readBounded(response);
-    try { return JSON.parse(text); } catch { if (seed) return text.trim(); throw new GatewayError('invalid-provider-data', 'Public chain provider returned invalid JSON'); }
+    return { text: await readBounded(response), response };
+  }
+
+  private async seedGet(path: string): Promise<unknown> {
+    const { text } = await this.publicGet(this.config.seedUrl, path);
+    try { return JSON.parse(text); } catch { return text.trim(); }
+  }
+
+  // Address-history index (tscscan v1 API). With an anchor the index answers for
+  // exactly that chain tip or refuses with 409, so pages cannot mix chain states.
+  private async indexGet(path: string, anchor?: IndexTip): Promise<IndexResponse> {
+    const { text, response } = await this.publicGet(this.config.indexUrl, `v1${path}`, anchor ? { 'X-Chain-Height': String(anchor.height), 'X-Chain-Hash': anchor.hash } : {});
+    let body: RecordData;
+    try { body = record(JSON.parse(text)); } catch { throw new GatewayError('invalid-provider-data', 'Public chain provider returned invalid JSON'); }
+    const height = response.headers.get('x-chain-height'); const tipHash = response.headers.get('x-chain-hash');
+    const tip = height !== null && /^(0|[1-9][0-9]{0,15})$/.test(height) && tipHash !== null && /^[0-9a-f]{64}$/.test(tipHash) ? { height: integer(Number(height)), hash: tipHash } : null;
+    // An anchored answer must also come from an index still at that tip, so a cache
+    // or proxy that drops the anchor cannot hand back another chain state.
+    if (anchor && (!tip || tip.height !== anchor.height || tip.hash !== anchor.hash)) throw new GatewayError('index-changed', 'Public chain index no longer serves the requested chain tip');
+    return { data: body.data, ...(body.page === undefined ? {} : { page: record(body.page) }), tip };
   }
 
   async network(): Promise<NetworkInfo> {
@@ -76,18 +98,11 @@ export class Gateway {
     else if (!ready) readinessReason = 'stale-data';
     let indexedHeight = height;
     if (this.config.network === 'mainnet') {
-      try { const index = record(await this.publicGet('/api/status'));
-        indexedHeight = integer(index.indexed_height);
-        const lag = integer(index.lag_blocks); const indexedTip = hash(index.indexed_tip); const checked = integer(index.checked_at);
-        const indexReady = indexSupportsAcceptedTip(index, { height, hash: tipHash, headers }, now);
-        const indexFresh = Math.abs(now - checked) <= 30;
-        if (!readinessReason) {
-          if (index.core_online !== true) readinessReason = 'index-unavailable';
-          else if (index.initial_block_download !== false) readinessReason = 'node-sync';
-          else if (!indexFresh) readinessReason = 'stale-data';
-          else if (!indexReady) readinessReason = headers > height && index.ready !== true && lag === 0 && indexedHeight === height && indexedTip === tipHash ? 'block-validation' : 'index-sync';
-        }
-        ready = ready && indexReady && indexFresh;
+      try { const status = await this.indexGet('/status'); ensure(status.tip, 'Index response lacks its chain tip');
+        const index = indexReadiness(record(status.data), status.tip, { height, hash: tipHash, headers }, now);
+        indexedHeight = index.indexedHeight;
+        if (!readinessReason && index.reason) readinessReason = index.reason;
+        ready = ready && index.ready;
       } catch { ready = false; indexedHeight = 0; readinessReason ??= 'index-unavailable'; }
     }
     const timing = this.config.network === 'mainnet' ? await this.recentBlockTiming(height, tipHash, tipTime) : {};
@@ -175,15 +190,15 @@ export class Gateway {
     }
     if (typeof raw !== 'string' && this.config.network === 'mainnet') {
       if (!blockHash) {
-        try { const tx = record(record(await this.publicGet(`/api/tx/${txid}`)).transaction);
-          if (tx.block_hash != null) { const candidateHash = hash(tx.block_hash); const height = integer(tx.block_height);
+        try { const tx = record((await this.indexGet(`/transactions/${txid}`)).data); ensure(tx.txid === txid);
+          if (tx.block != null) { const block = record(tx.block); const candidateHash = hash(block.hash); const height = integer(block.height);
             if (hash(await this.rpc.call('getblockhash', [height])) === candidateHash) {
               try { raw = await this.rpc.call('getrawtransaction', [txid, false, candidateHash]); } catch (error) { if (!(error instanceof RpcError) || ![-1, -5].includes(error.code)) throw error; }
             }
           }
         } catch (error) { if (error instanceof GatewayError && error.code === 'rpc-unavailable') throw error; }
       }
-      if (typeof raw !== 'string') raw = await this.publicGet(`/api/tx/${txid}/hex`, true);
+      if (typeof raw !== 'string') raw = await this.seedGet(`/api/tx/${txid}/hex`);
     }
     if (typeof raw !== 'string' || raw.length < 20 || raw.length > 2_000_000 || raw.length % 2 || !/^[0-9a-f]+$/i.test(raw)) throw new GatewayError('raw-unavailable', 'Parent transaction raw data is unavailable', 404);
     let decoded: NativeTransaction;
@@ -308,25 +323,26 @@ export class Gateway {
     collection.candidates = collection.candidates.filter(c => !spent.has(key(c.txid, c.vout)));
   }
 
-  private async mainnetHistory(addresses: string[], network: NetworkInfo): Promise<Collection> {
+  private async mainnetHistory(addresses: string[], scripts: Map<string, string>, network: NetworkInfo): Promise<Collection> {
     const used = new Set<string>(); const history = new Map<string, HistoryEntry>(); const warnings: string[] = [];
-    const txHints = new Map<string, { height: number | null; blockHash?: string }>(); let complete = true;
+    const txHints = new Map<string, { height: number | null; blockHash?: string; coinbase: boolean }>(); let complete = true;
     const remaining = { requests: Math.min(this.config.maxHistoryTransactions + 100, 1000) };
+    // Every index read is pinned to Core's accepted tip (see indexGet).
+    const anchor = { height: network.height, hash: network.tipHash };
     await mapBounded(addresses, async address => {
       let reachedEnd = false; const addressSeen = new Set<string>(); let expectedTotal: number | undefined;
       for (let page = 1; page <= this.config.maxHistoryPages; page++) {
         if (--remaining.requests < 0) { complete = false; break; }
-        let payload: RecordData;
-        try { payload = record(await this.publicGet(`/api/address/${encodeURIComponent(address)}?page=${page}&page_size=100`)); }
-        catch { complete = false; warnings.push('Address history is unavailable; discovery is incomplete.'); break; }
-        const index = record(payload.status);
-        if (!indexSupportsAcceptedTip(index, { height: network.height, hash: network.tipHash,
-          headers: network.height + (network.pendingValidationBlocks ?? 0) }, Math.floor(Date.now() / 1000))) {
-          complete = false; warnings.push('Address index changed during synchronization.');
+        let payload: IndexResponse;
+        try { payload = await this.indexGet(`/addresses/${encodeURIComponent(address)}/transactions?limit=100&page=${page}`, anchor); }
+        catch (error) {
+          complete = false;
+          warnings.push(error instanceof GatewayError && error.code === 'index-changed' ? 'Address index changed during synchronization.' : 'Address history is unavailable; discovery is incomplete.');
+          break;
         }
-        const txs = array(payload.transactions, 200); const pagination = record(payload.pagination);
-        ensure(integer(pagination.page, 1) === page && typeof pagination.has_next === 'boolean');
-        const total = integer(pagination.total); integer(pagination.total_pages);
+        const txs = array(payload.data, 100); const pagination = record(payload.page);
+        ensure(integer(pagination.number, 1) === page);
+        const total = integer(pagination.total); const totalPages = integer(pagination.total_pages);
         if (expectedTotal !== undefined && expectedTotal !== total) { complete = false; warnings.push('Address history changed during pagination.'); }
         expectedTotal = total;
         if (txs.length) used.add(address);
@@ -335,32 +351,31 @@ export class Gateway {
           if (addressSeen.has(txid)) { complete = false; warnings.push('Address history pagination overlaps; retry required.'); continue; }
           addressSeen.add(txid);
           const height = tx.block_height == null ? null : integer(tx.block_height);
-          const status = tx.status === 'pending' || height === null ? 'pending' : 'confirmed';
+          const status = height === null ? 'pending' : 'confirmed';
           if (height !== null && height > network.height) { complete = false; continue; }
           const blockHash = height === null ? undefined : hash(tx.block_hash);
-          const delta = atomic(tx.delta_sats); const fee = tx.fee_sats == null ? null : atomic(tx.fee_sats); ensure(fee === null || fee >= 0n);
+          const delta = indexAmount(tx.delta); const feeValue = record(tx.fee);
+          const fee = feeValue.units == null ? null : indexAmount(feeValue); ensure(fee === null || fee >= 0n);
+          ensure(typeof tx.is_coinbase === 'boolean');
           const existing = history.get(txid);
           if (existing) {
             ensure(existing.status === status && existing.blockHeight === height && existing.feeUnits === (fee === null ? null : String(fee)), 'Conflicting address history entries');
             existing.deltaUnits = String(BigInt(existing.deltaUnits) + delta);
           } else {
             if (history.size >= this.config.maxHistoryTransactions) { complete = false; warnings.push('History limit reached; wallet discovery is incomplete.'); break; }
-            history.set(txid, { txid, deltaUnits: String(delta), feeUnits: fee === null ? null : String(fee), status, confirmations: height === null ? 0 : network.height - height + 1, blockHeight: height, timestamp: tx.timestamp == null ? null : integer(tx.timestamp) });
-            txHints.set(txid, { height, blockHash });
+            history.set(txid, { txid, deltaUnits: String(delta), feeUnits: fee === null ? null : String(fee), status, confirmations: height === null ? 0 : network.height - height + 1, blockHeight: height, timestamp: tx.time == null ? null : integer(tx.time) });
+            txHints.set(txid, { height, blockHash, coinbase: tx.is_coinbase });
           }
         }
-        if (!pagination.has_next) { reachedEnd = true; break; }
+        if (page >= totalPages) { reachedEnd = true; break; }
         if (!txs.length) { complete = false; break; }
       }
       if (!reachedEnd || addressSeen.size !== expectedTotal) complete = false;
     });
-    const addressesSet = new Set(addresses); const candidates: Candidate[] = []; const ownedOutpoints = new Map<string, Candidate>(); const spentOutpoints: SpentOutpoint[] = []; const spendSeen = new Set<string>();
+    const candidates: Candidate[] = []; const ownedOutpoints = new Map<string, Candidate>(); const spentOutpoints: SpentOutpoint[] = []; const spendSeen = new Set<string>();
     await mapBounded([...txHints], async ([txid, hint]) => {
       if (hint.height === null) return; // Core supplies authoritative pending detail below.
-      let tx: RecordData;
-      try { tx = record(record(await this.publicGet(`/api/tx/${txid}`)).transaction); }
-      catch { complete = false; warnings.push('Transaction details are unavailable.'); return; }
-      ensure(tx.txid === txid && typeof tx.is_coinbase === 'boolean');
+      let outputs: { vout: number; scriptHex: string; amount: bigint }[] | null = null; let coinbase = hint.coinbase;
       try {
         ensure(hint.blockHash && hash(await this.rpc.call('getblockhash', [hint.height])) === hint.blockHash, 'Confirmed history block is not canonical');
         // Cached/fallback raw bytes prove identity, not inclusion. Require a
@@ -375,23 +390,59 @@ export class Gateway {
           // Current gettxout + native raw checks can still prove an old coin.
           included = null; warnings.push('Historical spend proofs are unavailable for pruned blocks; current Core outputs remain independently checked.');
         }
+        let parent: NativeParent | null;
         if (included) {
           ensure(included.txid === txid && included.in_active_chain === true && hash(included.blockhash) === hint.blockHash && integer(included.confirmations, 1) === network.height - hint.height + 1 && typeof included.hex === 'string', 'Confirmed transaction is not in the canonical block');
-          const parent = await this.nativeParent(txid, hint.blockHash);
+          parent = await this.nativeParent(txid, hint.blockHash);
           ensure(included.hex.toLowerCase() === parent.rawHex, 'Confirmed Core raw bytes differ from cached history');
           if (!parent.decoded.coinbase && !appendSpendEdges(spentOutpoints, spendSeen, txid, parent.decoded.inputs)) { complete = false; warnings.push('Wallet spend graph limit reached; synchronization is incomplete.'); }
+        } else {
+          // Pruned block: identity-checked fallback bytes list the outputs when available,
+          // otherwise the index does; neither affects completeness, as before.
+          parent = await this.nativeParent(txid, hint.blockHash).catch(() => null);
+        }
+        // Identity-checked bytes list the outputs; Core still checks every candidate below.
+        if (parent) {
+          outputs = parent.decoded.outputs.map(output => ({ vout: output.vout, scriptHex: output.scriptHex, amount: BigInt(output.amountUnits) }));
+          coinbase = parent.decoded.coinbase;
         }
       } catch { complete = false; warnings.push('Confirmed transfer raw data cannot be verified; spend history is incomplete.'); }
-      const outputs = array(tx.outputs, 2000); ensure(integer(tx.output_count) === outputs.length);
-      for (let n = 0; n < outputs.length; n++) { const output = record(outputs[n]); ensure(integer(output.vout_index) === n);
-        if (typeof output.address !== 'string' || !addressesSet.has(output.address)) continue;
-        const amount = atomic(output.value_sats); ensure(amount >= 0n);
+      // A parent the native decoder refuses (e.g. an asset transfer) or unavailable
+      // pruned bytes keep owned outputs visible as unverified candidates, listed by the index.
+      if (!outputs) {
+        try { outputs = await this.indexOutputs(txid, anchor, scripts, remaining); }
+        catch { complete = false; warnings.push('Transaction details are unavailable.'); return; }
+      }
+      for (const output of outputs) {
+        const address = scripts.get(output.scriptHex); if (!address) continue;
         if (candidates.length >= this.config.maxHistoryTransactions) { complete = false; warnings.push('UTXO limit reached.'); continue; }
-        const candidate = { txid, vout: n, address: output.address, scriptHex: script(output.script_hex), amount, blockHeight: hint.height, blockHash: hint.blockHash, coinbase: tx.is_coinbase };
-        candidates.push(candidate); ownedOutpoints.set(key(txid, n), candidate);
+        const candidate = { txid, vout: output.vout, address, scriptHex: output.scriptHex, amount: output.amount, blockHeight: hint.height, blockHash: hint.blockHash, coinbase };
+        candidates.push(candidate); ownedOutpoints.set(key(txid, output.vout), candidate);
       }
     });
     return { candidates, history: [...history.values()], used, complete, warnings, ownedOutpoints, spentOutpoints };
+  }
+
+  // Owned outputs of one confirmed transaction as listed by the index (at most 2000 outputs).
+  private async indexOutputs(txid: string, anchor: IndexTip, scripts: Map<string, string>, remaining: { requests: number }): Promise<{ vout: number; scriptHex: string; amount: bigint }[]> {
+    const owned = new Map([...scripts].map(([scriptHex, address]) => [address, scriptHex]));
+    const outputs: { vout: number; scriptHex: string; amount: bigint }[] = []; let seen = 0; let total = -1;
+    for (let page = 1; seen !== total; page++) {
+      ensure(--remaining.requests >= 0 && page <= 20, 'Transaction output limit reached');
+      const payload = await this.indexGet(`/transactions/${txid}/outputs?limit=100&page=${page}`, anchor);
+      const rows = array(payload.data, 100); const pagination = record(payload.page);
+      ensure(integer(pagination.number, 1) === page);
+      const pageTotal = integer(pagination.total); ensure(pageTotal <= 2000 && (total < 0 || pageTotal === total)); total = pageTotal;
+      ensure(rows.length > 0 || seen === total);
+      for (const value of rows) {
+        const output = record(value); ensure(integer(output.index) === seen); const amount = indexAmount(output.value); ensure(amount >= 0n);
+        const scriptHex = typeof output.address === 'string' ? owned.get(output.address) : undefined;
+        if (scriptHex) outputs.push({ vout: seen, scriptHex, amount });
+        seen++;
+      }
+      ensure(seen <= total);
+    }
+    return outputs;
   }
 
   private async ensureWatchWallet(addresses: string[]): Promise<void> {
@@ -480,7 +531,7 @@ export class Gateway {
     const network = await this.network();
     if (!network.ready) return { network, addresses: addresses.map(address => ({ address, used: false })), utxos: [], history: [], complete: false, warnings: ['Chain data is not synchronized or fresh.'], observedAt: iso() };
     const pool = await this.mempoolSnapshot(); const fingerprint = pool.fingerprint; const scripts = await this.validateAddresses(addresses);
-    const collection = this.config.network === 'mainnet' ? await this.mainnetHistory(addresses, network) : await this.regtestHistory(addresses, scripts, network);
+    const collection = this.config.network === 'mainnet' ? await this.mainnetHistory(addresses, scripts, network) : await this.regtestHistory(addresses, scripts, network);
     if (this.config.network === 'mainnet') await this.overlayMempool(pool.ids, scripts, collection);
     const parents = new Map<string, Promise<NativeParent>>(); const utxos: Utxo[] = []; const seen = new Set<string>();
     const spent = new Set(collection.spentOutpoints.map(s => key(s.txid, s.vout)));
@@ -538,9 +589,9 @@ export class Gateway {
     }
     if (this.config.network === 'mainnet') {
       try {
-        const hint = record(record(await this.publicGet(`/api/tx/${txid}`)).transaction);
-        if (hint.txid === txid && hint.block_height != null && hint.block_hash != null) {
-          const blockHash = hash(hint.block_hash); const height = integer(hint.block_height);
+        const hint = record((await this.indexGet(`/transactions/${txid}`)).data);
+        if (hint.txid === txid && hint.block != null) {
+          const block = record(hint.block); const blockHash = hash(block.hash); const height = integer(block.height);
           if (hash(await this.rpc.call('getblockhash', [height])) === blockHash) {
             const known = record(await this.rpc.call('getrawtransaction', [txid, true, blockHash]));
             if (known.txid === txid && known.in_active_chain === true && integer(known.confirmations, 1) > 0) return true;
@@ -548,7 +599,7 @@ export class Gateway {
         }
       } catch (error) {
         if (error instanceof RpcError && ![-1, -5, -8].includes(error.code)) throw error;
-        if (error instanceof GatewayError && !['not-found', 'index-unavailable', 'invalid-provider-data'].includes(error.code)) throw error;
+        if (error instanceof GatewayError && !['not-found', 'index-unavailable', 'index-changed', 'invalid-provider-data'].includes(error.code)) throw error;
       }
       if (submitted) for (const output of submitted.outputs) {
         const current = await this.rpc.call('gettxout', [txid, output.vout, true]); if (current === null) continue;

@@ -10,6 +10,7 @@ import { configFromEnvironment } from './index';
 import type { Rpc } from './rpc';
 import { decodeNativeTransaction } from '../src/core/raw';
 import { coinUnits } from './data';
+import { indexFetch, isoAgo, type IndexRow } from './test-index';
 
 const TIP = 'a'.repeat(64);
 const OWN_SCRIPT = `0014${'1'.repeat(40)}`;
@@ -70,17 +71,6 @@ const staticDirectories: string[] = [];
 async function create(rpc: Rpc, extra: Partial<GatewayConfig> = {}) { const app = await buildApp(config(rpc, extra)); opened.push(app); return app; }
 afterEach(async () => { await Promise.all(opened.splice(0).map(app => app.close())); await Promise.all(staticDirectories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 const post = (url: string, payload: unknown) => ({ method: 'POST' as const, url, headers: { origin: 'https://wallet.example', 'content-type': 'application/json' }, payload: JSON.stringify(payload) });
-const indexStatus = () => ({ ready: true, core_online: true, initial_block_download: false, indexed_height: 200, indexed_tip: TIP, lag_blocks: 0, checked_at: now() });
-const validationWaitStatus = () => ({ ...indexStatus(), ready: false, state: 'syncing', core_height: 200,
-  core_headers: 201, effective_work_ready: true, verification_progress: 1, tip_age_seconds: 1,
-  warnings: ['TensorCash Core is still synchronizing the chain.'] });
-function explorerFetch(routes: Record<string, unknown>): typeof fetch {
-  return (async input => {
-    const url = new URL(String(input)); if (url.pathname === '/api/status') return new Response(JSON.stringify(indexStatus()), { status: 200 });
-    if (!(url.pathname in routes)) return new Response('{}', { status: 404 });
-    return new Response(JSON.stringify(routes[url.pathname]), { status: 200 });
-  }) as typeof fetch;
-}
 describe('gateway network and request boundary', () => {
   it('rejects wrong genesis before wallet or signing calls', async () => {
     const handler = baseHandler(); const rpc = new MockRpc((m, p, w) => m === 'getblockhash' ? 'b'.repeat(64) : handler(m, p, w));
@@ -169,7 +159,7 @@ describe('confirmation policy', () => {
       if (m === 'testmempoolaccept') return [{ txid: child.txid, allowed: true }];
       return handler(m, p, w);
     });
-    const app = await create(rpc, { network: 'mainnet', fetch: explorerFetch({}) });
+    const app = await create(rpc, { network: 'mainnet', fetch: indexFetch() });
     const response = await app.inject(post('/api/v1/tx/validate', { rawHex: childRaw }));
     expect(response.statusCode).toBe(200); expect(response.json().allowed).toBe(confirmations >= 2);
     expect(rpc.calls.some(call => call.method === 'testmempoolaccept')).toBe(confirmations >= 2);
@@ -177,7 +167,7 @@ describe('confirmation policy', () => {
   it.each([99, 100])('preserves the mainnet coinbase maturity at %i confirmations', async confirmations => {
     const handler = baseHandler('mainnet');
     const rpc = new MockRpc((m, p, w) => m === 'gettxout' ? { bestblock: TIP, confirmations, value: '0.00400000', coinbase: true, scriptPubKey: { hex: OWN_SCRIPT } } : handler(m, p, w));
-    const app = await create(rpc, { network: 'mainnet', fetch: explorerFetch({}) });
+    const app = await create(rpc, { network: 'mainnet', fetch: indexFetch() });
     const response = await app.inject(post('/api/v1/tx/validate', { rawHex: CHILD_RAW }));
     expect(response.statusCode).toBe(200); expect(response.json().allowed).toBe(confirmations >= 100);
     expect(rpc.calls.some(call => call.method === 'testmempoolaccept')).toBe(confirmations >= 100);
@@ -185,26 +175,16 @@ describe('confirmation policy', () => {
 });
 
 describe('wallet operations during long block gaps', () => {
-  function gapFixture(tipAge: number, options: { status?: Record<string, unknown>; historyStatus?: Record<string, unknown>; spent?: boolean } = {}) {
+  function gapFixture(tipAge: number, options: { status?: Record<string, unknown>; statusTip?: { height: number; hash: string }; dataTip?: { height: number; hash: string }; anchor?: () => boolean; failHistory?: number; spent?: boolean } = {}) {
     const handler = baseHandler('mainnet');
     const rpc = new MockRpc((m, p, w) => {
       if (m === 'getblockheader') return { time: now() - tipAge };
       if (m === 'gettxout' && (options.spent || p[0] !== PARENT.txid)) return null;
       return handler(m, p, w);
     });
-    const status = () => ({ ...indexStatus(), ready: false, state: 'syncing', core_height: 200, core_headers: 200,
-      effective_work_ready: true, verification_progress: 1, tip_age_seconds: tipAge,
-      warnings: ['The Core chain tip is older than 30 minutes.'], ...options.status });
-    const fetcher = (async input => {
-      const url = new URL(String(input));
-      if (url.pathname === '/api/status') return Response.json(status());
-      if (url.pathname === `/api/address/${mainAddress}`) return Response.json({ status: { ...status(), ...options.historyStatus },
-        pagination: { page: 1, total: 1, total_pages: 1, has_next: false },
-        transactions: [{ txid: PARENT.txid, block_height: 100, block_hash: TIP, delta_sats: 400000, fee_sats: 0, timestamp: now() - tipAge }] });
-      if (url.pathname === `/api/tx/${PARENT.txid}`) return Response.json({ transaction: { txid: PARENT.txid, is_coinbase: true, output_count: 1,
-        outputs: [{ address: mainAddress, vout_index: 0, value_sats: 400000, script_hex: OWN_SCRIPT }] } });
-      return new Response('{}', { status: 404 });
-    }) as typeof fetch;
+    // The index has no block-age signal: a fresh, complete observation of the accepted tip stays usable.
+    const fetcher = indexFetch({ status: options.status, statusTip: options.statusTip && (() => options.statusTip!), dataTip: options.dataTip, anchor: options.anchor, failHistory: options.failHistory,
+      history: { [mainAddress]: [{ txid: PARENT.txid, height: 100, delta: 400000, fee: 0, time: now() - tipAge, coinbase: true }] } });
     return { rpc, fetcher };
   }
   it.each([2600, 7201, 86400, 7 * 86400])('reads balances and broadcasts through Core after a %i-second block gap', async tipAge => {
@@ -223,23 +203,24 @@ describe('wallet operations during long block gaps', () => {
     expect(rpc.calls.filter(call => call.method === 'sendrawtransaction')).toHaveLength(1);
   });
   it.each([
-    { checked_at: now() - 31 }, { indexed_tip: 'b'.repeat(64) }, { lag_blocks: 1 },
-    { core_online: false }, { initial_block_download: true },
-    { warnings: ['The Core chain tip is older than 30 minutes.', 'Unknown provider failure'] },
-  ])('does not let an age-only warning bypass inconsistent observations: %j', async status => {
-    const { rpc, fetcher } = gapFixture(86400, { status });
+    { status: { last_core_poll_at: isoAgo(31) } }, { statusTip: { height: 200, hash: 'b'.repeat(64) } }, { statusTip: { height: 199, hash: TIP } },
+    { status: { observed_core_height: 199 } }, { status: { coverage: { blocks: { scope: 'chain_wide', state: 'complete', through_height: 200 }, transactions: { scope: 'chain_wide', state: 'complete', through_height: 200 }, addresses: { scope: 'chain_wide', state: 'complete', through_height: 199 } } } },
+    { status: { core_initial_block_download: true } }, { status: { sync_state: 'syncing' } }, { status: { network: 'testnet' } },
+  ])('does not let a long block gap bypass inconsistent or stale index observations: %j', async options => {
+    const { rpc, fetcher } = gapFixture(86400, options);
     const app = await create(rpc, { network: 'mainnet', fetch: fetcher });
     expect((await app.inject('/health')).statusCode).toBe(503);
     expect((await app.inject(post('/api/v1/tx/broadcast', { rawHex: CHILD_RAW }))).statusCode).toBe(503);
     expect(rpc.calls.some(call => ['testmempoolaccept', 'sendrawtransaction'].includes(call.method))).toBe(false);
   });
   it.each([
-    { indexed_tip: 'b'.repeat(64) }, { checked_at: now() - 31 },
-    { warnings: ['The Core chain tip is older than 30 minutes.', 'Unknown history failure'] },
-  ])('still rejects an inconsistent address-history page during a long block gap: %j', async historyStatus => {
-    const { rpc, fetcher } = gapFixture(86400, { historyStatus });
+    { anchor: () => false }, { dataTip: { height: 201, hash: 'c'.repeat(64) } }, { dataTip: { height: 200, hash: 'b'.repeat(64) } }, { failHistory: 503 }, { failHistory: 404 },
+  ])('still rejects an address history that moved from the accepted tip or is unavailable during a long block gap: %j', async options => {
+    const { rpc, fetcher } = gapFixture(86400, options);
     const app = await create(rpc, { network: 'mainnet', fetch: fetcher });
-    expect((await app.inject(post('/api/v1/wallet/sync', { addresses: [mainAddress] }))).json().complete).toBe(false);
+    const result = (await app.inject(post('/api/v1/wallet/sync', { addresses: [mainAddress] }))).json();
+    expect(result.complete).toBe(false); expect(result.utxos).toEqual([]);
+    expect(result.warnings).toContain('anchor' in options || 'dataTip' in options ? 'Address index changed during synchronization.' : 'Address history is unavailable; discovery is incomplete.');
   });
   it('still prevents broadcasting a spent input during a long block gap', async () => {
     const { rpc, fetcher } = gapFixture(86400, { spent: true });
@@ -265,7 +246,7 @@ describe('optional own-Core block timing', () => {
     });
   }
   it('returns the observed 20-interval arithmetic mean and shares immutable timing reads across concurrent requests', async () => {
-    const rpc = timingRpc(tipTime - 12000); const app = await create(rpc, { network: 'mainnet', fetch: explorerFetch({}) });
+    const rpc = timingRpc(tipTime - 12000); const app = await create(rpc, { network: 'mainnet', fetch: indexFetch() });
     const responses = await Promise.all(Array.from({ length: 3 }, () => app.inject('/api/v1/network')));
     for (const response of responses) expect(response.json()).toMatchObject({ ready: true, averageBlockSeconds: 600, blockTimeSampleSize: 20, lastBlockTime: tipTime });
     await app.inject('/api/v1/network'); expect(rpc.calls.filter(c => c.method === 'getblockheader' && c.params[0] === oldHash)).toHaveLength(1);
@@ -273,7 +254,7 @@ describe('optional own-Core block timing', () => {
   });
   it('omits timing after unavailable, nonpositive, excessive or reorged samples without changing readiness', async () => {
     for (const [oldTime, options] of [[tipTime, {}], [tipTime + 1, {}], [tipTime - 20 * 86401, {}], [tipTime - 12000, { fail: true }], [tipTime - 12000, { reorg: true }]] as const) {
-      const app = await create(timingRpc(oldTime, options), { network: 'mainnet', fetch: explorerFetch({}) }); const result = (await app.inject('/api/v1/network')).json();
+      const app = await create(timingRpc(oldTime, options), { network: 'mainnet', fetch: indexFetch() }); const result = (await app.inject('/api/v1/network')).json();
       expect(result.ready).toBe(true); expect(result.averageBlockSeconds).toBeUndefined(); expect(result.blockTimeSampleSize).toBeUndefined(); expect(result.lastBlockTime).toBe(tipTime);
     }
   });
@@ -326,42 +307,31 @@ describe('TSCScan address and pending history', () => {
   it('returns a complete accepted-tip address view during explicit validation-only waiting', async () => {
     const handler = baseHandler('mainnet');
     const rpc = new MockRpc((m, p, w) => m === 'getblockchaininfo' ? { chain: 'tensor', blocks: 200, headers: 201, bestblockhash: TIP, initialblockdownload: false } : handler(m, p, w));
-    const fetcher = (async input => {
-      const url = new URL(String(input));
-      if (url.pathname === '/api/status') return Response.json(validationWaitStatus());
-      if (url.pathname === `/api/address/${mainAddress}`) return Response.json({ status: validationWaitStatus(), transactions: [],
-        pagination: { page: 1, has_next: false, total: 0, total_pages: 0 } });
-      return new Response('{}', { status: 404 });
-    }) as typeof fetch;
-    const app = await create(rpc, { network: 'mainnet', fetch: fetcher });
+    const app = await create(rpc, { network: 'mainnet', fetch: indexFetch({ status: { observed_header_height: 201 } }) });
     const result = (await app.inject(post('/api/v1/wallet/sync', { addresses: [mainAddress] }))).json();
     expect(result).toMatchObject({ complete: true, network: { ready: true, height: 200, indexedHeight: 200, pendingValidationBlocks: 1 }, utxos: [] });
   });
   it('subtracts pending input despite spent_by_txid=null on confirmed output', async () => {
     const pending = decodeNativeTransaction(rawTx(PARENT.txid, 0, 399800));
-    const history = { status: indexStatus(), address: {}, pagination: { page: 1, page_size: 100, total: 2, total_pages: 1, has_next: false }, transactions: [{ txid: PARENT.txid, block_height: 100, block_hash: TIP, delta_sats: 400000, fee_sats: 0, timestamp: now() - 100 }, { txid: pending.txid, block_height: null, status: 'pending', delta_sats: -200, fee_sats: 200, timestamp: now() }] };
-    const parentDetail = { transaction: { txid: PARENT.txid, is_coinbase: true, input_count: 1, output_count: 1, inputs: [{ prev_txid: null }], outputs: [{ address: mainAddress, vout_index: 0, value_sats: 400000, script_hex: OWN_SCRIPT, spent_by_txid: null }] } };
-    const pendingDetail = { transaction: { txid: pending.txid, is_coinbase: false, input_count: 1, output_count: 1, inputs: [{ prev_txid: PARENT.txid, prev_vout: 0 }], outputs: [{ address: mainAddress, vout_index: 0, value_sats: 399800, script_hex: OWN_SCRIPT, spent_by_txid: null }] } };
+    const history: IndexRow[] = [{ txid: PARENT.txid, height: 100, delta: 400000, fee: 0, time: now() - 100, coinbase: true }, { txid: pending.txid, height: null, delta: -200, fee: 200, time: now() }];
     const handler = baseHandler('mainnet'); const pendingRaw = rawTx(PARENT.txid, 0, 399800);
     const rpc = new MockRpc((m, p, w) => m === 'gettxout' ? null : m === 'getrawmempool' ? [pending.txid] : m === 'getmempoolentry' ? { time: now() } : m === 'getrawtransaction' && p[0] === pending.txid ? p[1] === true ? verbose(pendingRaw) : pendingRaw : handler(m, p, w));
-    const app = await create(rpc, { network: 'mainnet', fetch: explorerFetch({ [`/api/address/${mainAddress}`]: history, [`/api/tx/${PARENT.txid}`]: parentDetail, [`/api/tx/${pending.txid}`]: pendingDetail }) });
+    const app = await create(rpc, { network: 'mainnet', fetch: indexFetch({ history: { [mainAddress]: history } }) });
     const response = await app.inject(post('/api/v1/wallet/sync', { addresses: [mainAddress] }));
     expect(response.statusCode).toBe(200); expect(response.json()).toMatchObject({ complete: true, utxos: [], addresses: [{ address: mainAddress, used: true }] });
     expect(rpc.calls.some(c => c.method === 'gettxout' && c.params[0] === PARENT.txid)).toBe(false);
     expect(rpc.calls.some(c => ['createwallet', 'importdescriptors', 'listtransactions'].includes(c.method))).toBe(false);
   });
   it('does not claim complete when pagination cap is reached', async () => {
-    const payload = { status: indexStatus(), pagination: { page: 1, total: 101, total_pages: 2, has_next: true }, transactions: [] };
-    const app = await create(new MockRpc(baseHandler('mainnet')), { network: 'mainnet', maxHistoryPages: 1, fetch: explorerFetch({ [`/api/address/${mainAddress}`]: payload }) });
+    const payload = { data: [], page: { limit: 100, number: 1, total: 101, total_pages: 2 } };
+    const app = await create(new MockRpc(baseHandler('mainnet')), { network: 'mainnet', maxHistoryPages: 1, fetch: indexFetch({ pages: { [mainAddress]: payload } }) });
     expect((await app.inject(post('/api/v1/wallet/sync', { addresses: [mainAddress] }))).json().complete).toBe(false);
   });
 });
 
 describe('authoritative Core mempool overlay', () => {
   const changeAddress = `tc1q${'b'.repeat(38)}`; const changeScript = `0014${'3'.repeat(40)}`;
-  const indexed = (transactions: unknown[]) => ({ status: indexStatus(), pagination: { page: 1, total: transactions.length, total_pages: transactions.length ? 1 : 0, has_next: false }, transactions });
-  const fundingRow = { txid: PARENT.txid, block_height: 100, block_hash: TIP, delta_sats: 400000, fee_sats: 0, timestamp: now() - 100 };
-  const fundingDetail = { transaction: { txid: PARENT.txid, is_coinbase: true, output_count: 1, inputs: [{ prev_txid: null }], outputs: [{ address: mainAddress, vout_index: 0, value_sats: 400000, script_hex: OWN_SCRIPT, spent_by_txid: null }] } };
+  const fundingRow: IndexRow = { txid: PARENT.txid, height: 100, delta: 400000, fee: 0, time: now() - 100, coinbase: true };
   function setup(raw: string, options: { indexedPending?: boolean; emptyIndex?: boolean; otherRaw?: string; rpcOverride?: Handler; limit?: number } = {}) {
     const tx = decodeNativeTransaction(raw); const handler = baseHandler('mainnet');
     const rpc = new MockRpc(async (m, p, w) => {
@@ -378,8 +348,8 @@ describe('authoritative Core mempool overlay', () => {
       return handler(m, p, w);
     });
     const rows = options.emptyIndex ? [] : [fundingRow];
-    if (options.indexedPending) rows.push({ txid: tx.txid, block_height: null as unknown as number, block_hash: null as unknown as string, delta_sats: -100200, fee_sats: 200, timestamp: now() - 1 });
-    const fetch = explorerFetch({ [`/api/address/${mainAddress}`]: indexed(rows), [`/api/address/${changeAddress}`]: indexed([]), [`/api/tx/${PARENT.txid}`]: fundingDetail });
+    if (options.indexedPending) rows.push({ txid: tx.txid, height: null, delta: -100200, fee: 200, time: now() - 1 });
+    const fetch = indexFetch({ history: { [mainAddress]: rows, [changeAddress]: [] } });
     return { tx, rpc, create: () => create(rpc, { network: 'mainnet', fetch, ...(options.limit ? { maxMempoolTransactions: options.limit } : {}) }) };
   }
   it('shows outgoing history and unconfirmed change while the explorer omits the spend entirely', async () => {
@@ -390,13 +360,12 @@ describe('authoritative Core mempool overlay', () => {
     expect(result.spentOutpoints).toEqual([{ txid: PARENT.txid, vout: 0, spentByTxid: f.tx.txid }]); expect(result.addresses.every((a: { used: boolean }) => a.used)).toBe(true);
   });
   it('requires fresh confirmed block membership even when raw bytes are cached and still checks a claimed-spent Core output', async () => {
-    const rows = indexed([fundingRow, { txid: CHILD.txid, block_height: 200, block_hash: TIP, delta_sats: -400000, fee_sats: 200, timestamp: now() }]);
-    const childDetail = { transaction: { txid: CHILD.txid, is_coinbase: false, output_count: 1, inputs: [{ prev_txid: PARENT.txid, prev_vout: 0 }], outputs: [{ address: changeAddress, vout_index: 0, value_sats: 399800, script_hex: OTHER_SCRIPT }] } };
+    const rows: IndexRow[] = [fundingRow, { txid: CHILD.txid, height: 200, delta: -400000, fee: 200, time: now() }];
     for (const included of [false, true]) {
       const handler = baseHandler('mainnet'); const rpc = new MockRpc((m, p, w) => {
         if (m === 'getrawtransaction' && p[0] === CHILD.txid) { if (p[1] === true) { if (!included) throw new RpcError(-5, 'not in block'); return { ...verbose(CHILD_RAW), in_active_chain: true, blockhash: TIP, confirmations: 1 }; } return CHILD_RAW; }
         return handler(m, p, w);
-      }); const app = await create(rpc, { network: 'mainnet', fetch: explorerFetch({ [`/api/address/${mainAddress}`]: rows, [`/api/tx/${PARENT.txid}`]: fundingDetail, [`/api/tx/${CHILD.txid}`]: childDetail }) });
+      }); const app = await create(rpc, { network: 'mainnet', fetch: indexFetch({ history: { [mainAddress]: rows }, outputs: { [CHILD.txid]: [{ address: changeAddress, value: 399800 }] } }) });
       expect((await app.inject(`/api/v1/tx/${CHILD.txid}/raw`)).statusCode).toBe(200);
       const result = (await app.inject(post('/api/v1/wallet/sync', { addresses: [mainAddress] }))).json();
       expect(result.complete).toBe(false); expect(result.utxos[0]).toMatchObject({ txid: PARENT.txid, verified: true });
@@ -410,10 +379,21 @@ describe('authoritative Core mempool overlay', () => {
       if (m === 'getblockchaininfo') return { ...handler(m, p, w) as object, pruned: true, pruneheight: 150 };
       if (m === 'getrawtransaction') throw new RpcError(-1, 'Block not available');
       return handler(m, p, w);
-    }); const app = await create(rpc, { network: 'mainnet', fetch: explorerFetch({ [`/api/address/${mainAddress}`]: indexed([fundingRow]), [`/api/tx/${PARENT.txid}`]: fundingDetail, [`/api/tx/${PARENT.txid}/hex`]: PARENT_RAW }) });
+    }); const app = await create(rpc, { network: 'mainnet', fetch: indexFetch({ history: { [mainAddress]: [fundingRow] }, seed: { [PARENT.txid]: PARENT_RAW } }) });
     const response = await app.inject(post('/api/v1/wallet/sync', { addresses: [mainAddress] })); expect(response.statusCode).toBe(200);
     const result = response.json(); expect(result.complete).toBe(true); expect(result.utxos[0]).toMatchObject({ txid: PARENT.txid, verified: true, classification: 'native', confirmations: 101 }); expect(result.spentOutpoints).toEqual([]);
     expect(result.warnings.join(' ')).toContain('pruned blocks');
+  });
+  it('keeps a pruned historical coin without fallback bytes visible but unspendable and the history complete', async () => {
+    const handler = baseHandler('mainnet'); const rpc = new MockRpc((m, p, w) => {
+      if (m === 'getblockchaininfo') return { ...handler(m, p, w) as object, pruned: true, pruneheight: 150 };
+      if (m === 'getrawtransaction') throw new RpcError(-1, 'Block not available');
+      return handler(m, p, w);
+    }); const app = await create(rpc, { network: 'mainnet', fetch: indexFetch({ history: { [mainAddress]: [fundingRow] }, outputs: { [PARENT.txid]: [{ address: mainAddress, value: 400000 }] } }) });
+    const result = (await app.inject(post('/api/v1/wallet/sync', { addresses: [mainAddress] }))).json();
+    expect(result.complete).toBe(true); expect(result.utxos).toHaveLength(1);
+    expect(result.utxos[0]).toMatchObject({ txid: PARENT.txid, amountUnits: '400000', verified: false, rawParent: null });
+    expect(result.warnings.join(' ')).toContain('cannot be verified and are excluded from spending');
   });
   it('caps accumulated confirmed spend graphs and returns an explicit error if the bounded graph exceeds the response byte limit', async () => {
     const transactions = Array.from({ length: 101 }, (_, n) => {
@@ -479,8 +459,7 @@ describe('native validation and deterministic publication', () => {
       if (m === 'testmempoolaccept' && stage === 'after-mempool-check') changed = true;
       return handler(m, p, w);
     });
-    const fetcher = (async input => new URL(String(input)).pathname === '/api/status'
-      ? Response.json({ ...indexStatus(), indexed_tip: changed ? nextTip : TIP }) : new Response('{}', { status: 404 })) as typeof fetch;
+    const fetcher = indexFetch({ statusTip: () => ({ height: 200, hash: changed ? nextTip : TIP }) });
     const app = await create(rpc, { network: 'mainnet', fetch: fetcher, minConfirmations: 2 });
     const result = await app.inject(post('/api/v1/tx/broadcast', { rawHex: CHILD_RAW }));
     expect(result.statusCode).toBe(503); expect(result.json().error.code).toBe('stale-outpoint');
@@ -494,8 +473,7 @@ describe('native validation and deterministic publication', () => {
       if (m === 'testmempoolaccept') headers++;
       return handler(m, p, w);
     });
-    const fetcher = (async input => new URL(String(input)).pathname === '/api/status'
-      ? Response.json({ ...validationWaitStatus(), core_headers: headers }) : new Response('{}', { status: 404 })) as typeof fetch;
+    const fetcher = indexFetch({ status: () => ({ observed_header_height: headers }) });
     const app = await create(rpc, { network: 'mainnet', fetch: fetcher, minConfirmations: 2 });
     const result = await app.inject(post('/api/v1/tx/validate', { rawHex: CHILD_RAW }));
     expect(result.statusCode).toBe(200); expect(result.json()).toEqual({ txid: CHILD.txid, allowed: true });
@@ -503,8 +481,7 @@ describe('native validation and deterministic publication', () => {
   it('still verifies every native input and Core policy while unaccepted headers wait', async () => {
     const handler = baseHandler('mainnet');
     const rpc = new MockRpc((m, p, w) => m === 'getblockchaininfo' ? { chain: 'tensor', blocks: 200, headers: 201, bestblockhash: TIP, initialblockdownload: false } : handler(m, p, w));
-    const fetcher = (async input => new URL(String(input)).pathname === '/api/status'
-      ? Response.json(validationWaitStatus()) : new Response('{}', { status: 404 })) as typeof fetch;
+    const fetcher = indexFetch({ status: { observed_header_height: 201 } });
     const app = await create(rpc, { network: 'mainnet', fetch: fetcher, minConfirmations: 2 });
     const result = await app.inject(post('/api/v1/tx/validate', { rawHex: CHILD_RAW }));
     expect(result.statusCode).toBe(200); expect(result.json()).toEqual({ txid: CHILD.txid, allowed: true });
@@ -529,7 +506,7 @@ describe('native validation and deterministic publication', () => {
       if (m === 'getrawtransaction' && p[0] === CHILD.txid && p[2] === TIP) return { txid: CHILD.txid, confirmations: 20, in_active_chain: true };
       return handler(m, p, w);
     });
-    const app = await create(rpc, { network: 'mainnet', fetch: explorerFetch({ [`/api/tx/${CHILD.txid}`]: { transaction: { txid: CHILD.txid, block_height: 181, block_hash: TIP } } }) });
+    const app = await create(rpc, { network: 'mainnet', fetch: indexFetch({ transactions: { [CHILD.txid]: { height: 181, hash: TIP } } }) });
     expect((await app.inject(post('/api/v1/tx/broadcast', { rawHex: CHILD_RAW }))).json()).toEqual({ txid: CHILD.txid, status: 'already-known' });
     expect(rpc.calls.some(c => c.method === 'sendrawtransaction')).toBe(false);
     expect(rpc.calls.some(c => c.method === 'getrawtransaction' && c.params[2] === TIP)).toBe(true);
@@ -539,13 +516,13 @@ describe('native validation and deterministic publication', () => {
       if (m === 'gettxout' && p[0] === CHILD.txid) return { confirmations: 10000, coinbase: false, value: '0.00399800', scriptPubKey: { hex: OTHER_SCRIPT } };
       return handler(m, p, w);
     });
-    const app = await create(rpc, { network: 'mainnet', fetch: explorerFetch({}) });
+    const app = await create(rpc, { network: 'mainnet', fetch: indexFetch() });
     expect((await app.inject(post('/api/v1/tx/broadcast', { rawHex: CHILD_RAW }))).json()).toEqual({ txid: CHILD.txid, status: 'already-known' });
     expect(rpc.calls.some(c => c.method === 'sendrawtransaction')).toBe(false);
   });
   it('preserves unknown outcome when all submitted outputs and parents are spent or pruned', async () => {
     const handler = baseHandler('mainnet'); const rpc = new MockRpc((m, p, w) => m === 'gettxout' ? null : handler(m, p, w));
-    const app = await create(rpc, { network: 'mainnet', fetch: explorerFetch({}) });
+    const app = await create(rpc, { network: 'mainnet', fetch: indexFetch() });
     const response = await app.inject(post('/api/v1/tx/broadcast', { rawHex: CHILD_RAW }));
     expect(response.statusCode).toBe(503); expect(response.json().error.code).toBe('transaction-state-unknown');
     expect(rpc.calls.some(c => c.method === 'sendrawtransaction')).toBe(false);

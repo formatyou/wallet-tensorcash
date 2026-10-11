@@ -2,7 +2,8 @@
 
 The browser uses the same-origin gateway described in [server/README.md](../server/README.md).
 The gateway combines a configured TensorCash address-history index with its own
-Core node. Mainnet defaults use `https://tscscan.xyz` for history and
+Core node. Mainnet defaults use the TSCScan v1 API (`https://api.tscscan.xyz`) for
+history, `https://tscscan.xyz` for transaction links and
 `https://mempool.tensorcash.org` as an optional raw-transaction fallback.
 Public API availability and retention must be checked by each operator.
 
@@ -14,11 +15,11 @@ and index tips and mempool observations before returning a complete snapshot.
 Missing data, unsupported extensions, stale observations, races and bounded
 history limits fail closed for new spending. Observation freshness is separate
 from block age: a pause in mining does not invalidate an unchanged accepted tip,
-its existing confirmations or a freshly checked mempool. The explorer's known
-block-age advisory alone does not block balances or publication when its status
-was checked within 30 seconds and its complete index matches Core's accepted
-height/hash. Explicit pending-header advisories can coexist with that warning;
-unknown warnings, unavailable providers and inconsistent history still block.
+its existing confirmations or a freshly checked mempool. The index is usable
+when it polled its node within 30 seconds, reports itself ready with complete
+coverage, and its chain tip matches Core's accepted height/hash; every history
+page is pinned to that tip. Other states, unavailable providers and inconsistent
+history still block.
 The wallet adds no maximum-age cutoff for the last block, but both providers
 must still report completed initial synchronization and the required work
 readiness. A Core/provider restart during a long gap can re-enter initial block
