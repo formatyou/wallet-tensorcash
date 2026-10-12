@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "verifier": "TensorCash Code Verify (integrity.tensorcash.org)",
+  "reviewedTag": "v0.1.13",
+  "reviewedCommit": "04c41d224a0a4472275855e662ab0544aae40ef9",
+  "files": {
+    "scripts/build.mjs": "4bf10d0a6a6de95f919a441ad7635fa48dff2452d98c00c9120dc5809defed72",
+    "server/build.ts": "5cd7efffc3cc5b10086cd1bb29641f72c6341b27c7997e166ac5d0623ae8f224",
+    "vite.config.ts": "9082dd26e51cb93d4796e117da077de424e3198d8126d22e66ff7f5cabddb13f"
+  }
+}

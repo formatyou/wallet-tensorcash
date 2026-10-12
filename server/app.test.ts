@@ -100,7 +100,7 @@ describe('gateway network and request boundary', () => {
     expect(response.headers['content-security-policy']).toContain("script-src 'self'"); expect(response.headers['content-security-policy']).not.toContain('unsafe-inline');
     expect((await app.inject(post('/api/v1/rpc', { method: 'walletpassphrase' }))).statusCode).toBe(404);
   });
-  it('prevents caching HTML documents including static index and SPA navigation without changing asset headers', async () => {
+  it('revalidates the static release (index, SPA navigation, assets, 304s) and never stores gateway data', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'wallet-html-test-')); staticDirectories.push(directory);
     await mkdir(join(directory, 'assets'));
     await writeFile(join(directory, 'index.html'), '<!doctype html><html><head><title>unit-wallet-index</title></head><body></body></html>');
@@ -108,11 +108,15 @@ describe('gateway network and request boundary', () => {
     const app = await create(new MockRpc(baseHandler()), { staticDir: directory });
     for (const url of ['/', '/index.html', '/wallet/receive']) {
       const response = await app.inject({ method: 'GET', url, headers: { accept: 'text/html' } });
-      expect(response.statusCode).toBe(200); expect(response.headers['cache-control']).toBe('no-store');
+      expect(response.statusCode).toBe(200); expect(response.headers['cache-control']).toBe('no-cache'); expect(response.headers.etag).toBeTruthy();
       expect(response.headers['content-type']).toContain('text/html'); expect(response.body).toContain('unit-wallet-index');
+      const revalidated = await app.inject({ method: 'GET', url, headers: { accept: 'text/html', 'if-none-match': String(response.headers.etag) } });
+      expect(revalidated.statusCode).toBe(304); expect(revalidated.headers['cache-control']).toBe('no-cache');
     }
     const asset = await app.inject('/assets/app-01234567.js');
-    expect(asset.statusCode).toBe(200); expect(asset.body).toContain('unit-bundled-asset'); expect(asset.headers['cache-control']).toBeUndefined();
+    expect(asset.statusCode).toBe(200); expect(asset.body).toContain('unit-bundled-asset'); expect(asset.headers['cache-control']).toBe('no-cache');
+    for (const url of ['/api/build', '/api/v1/network', '/api/v1/missing', '/health', '/health?probe=1', '/%61pi/v1/network'])
+      expect((await app.inject({ method: 'GET', url, headers: { accept: 'text/html' } })).headers['cache-control']).toBe('no-store');
   });
   it('pins watch-only creation to independent regtest port', () => {
     expect(() => resolveConfig(config(new MockRpc(baseHandler()), { rpcUrl: 'http://127.0.0.1:19443', allowWatchWalletCreation: true }))).toThrow('isolated');

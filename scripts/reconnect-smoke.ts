@@ -16,7 +16,7 @@ for (const [name, browserType] of Object.entries({ chromium, firefox, webkit }))
   });
   try {
     const response = await page.goto(origin);
-    expect(response?.headers()['cache-control']).toBe('no-store');
+    expect(response?.headers()['cache-control']).toBe('no-cache');
     await expect(page.getByRole('alert')).toContainText('Core authentication is unavailable');
     await expect(page.getByRole('button', { name: /^Create a wallet/ })).toBeDisabled();
     temporarilyUnavailable = false;

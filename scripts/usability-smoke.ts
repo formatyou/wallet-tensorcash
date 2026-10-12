@@ -41,7 +41,7 @@ for (const [name, browserType] of Object.entries({ chromium, firefox, webkit }))
   const password = `ephemeral-usability-${crypto.randomUUID()}`;
   try {
     const response = await page.goto(origin);
-    expect(response?.headers()['cache-control']).toBe('no-store');
+    expect(response?.headers()['cache-control']).toBe('no-cache');
     await page.getByRole('button', { name: /^Create a wallet/ }).click({ timeout: 180000 });
     await page.locator('input[name=password]').fill(password);
     await page.locator('input[name=confirmPassword]').fill(password);

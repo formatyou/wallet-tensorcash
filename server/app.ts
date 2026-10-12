@@ -48,9 +48,12 @@ export async function buildApp(input: GatewayConfig): Promise<FastifyInstance> {
       if (!/^application\/json(?:\s*;|$)/i.test(request.headers['content-type'] || '')) throw new GatewayError('json-required', 'JSON content type is required', 415);
     }
   });
-  app.addHook('onSend', async (_request, reply, payload) => {
-    const contentType = reply.getHeader('Content-Type');
-    if (typeof contentType === 'string' && /^text\/html(?:;|$)/i.test(contentType)) reply.header('Cache-Control', 'no-store');
+  app.addHook('onSend', async (request, reply, payload) => {
+    // Gateway data is never stored. The static release (entry HTML, SPA fallback, assets and their 304s)
+    // may be stored but must be revalidated on every use, so integrity checkers can read the loaded bytes.
+    const route = request.routeOptions.url;
+    const gateway = request.url.startsWith('/api/') || route === '/health' || route?.startsWith('/api/') === true;
+    reply.header('Cache-Control', gateway ? 'no-store' : 'no-cache');
     return payload;
   });
   await app.register(rateLimit, { max: config.rateLimit ?? 90, timeWindow: '1 minute', skipOnError: false });
@@ -87,7 +90,7 @@ export async function buildApp(input: GatewayConfig): Promise<FastifyInstance> {
     const root = staticRoot; const info = await stat(root); if (!info.isDirectory()) throw new Error('Static build directory is invalid');
     await app.register(fastifyStatic, { root, wildcard: false, index: ['index.html'], dotfiles: 'deny', cacheControl: false });
     app.setNotFoundHandler((request, reply) => {
-      if (request.method === 'GET' && !request.url.startsWith('/api/') && !request.url.startsWith('/assets/') && request.headers.accept?.includes('text/html')) return reply.header('Cache-Control', 'no-store').sendFile('index.html');
+      if (request.method === 'GET' && !request.url.startsWith('/api/') && !request.url.startsWith('/assets/') && request.headers.accept?.includes('text/html')) return reply.sendFile('index.html');
       return reply.code(404).send({ error: { code: 'not-found', message: 'Not found' } });
     });
   } else app.setNotFoundHandler((_request, reply) => reply.code(404).send({ error: { code: 'not-found', message: 'Not found' } }));

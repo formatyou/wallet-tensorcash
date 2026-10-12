@@ -68,6 +68,10 @@ and after compilation, and forces production frontend compilation. It writes
 `GET /api/build` exposes immutable build metadata independently of Core and
 returns `Cache-Control: no-store`. See [release provenance](docs/PROVENANCE.md)
 and [operations](docs/OPERATIONS.md) for deployment and verification.
+Releases are tagged `vX.Y.Z` on the release commit
+([release tags](docs/OPERATIONS.md#release-tags-and-third-party-attestation)).
+Report security problems privately as described in
+[docs/SECURITY.md](docs/SECURITY.md#reporting-a-vulnerability).
 
 Browser signing tests require an isolated TensorCash Core regtest on loopback
 port `19453`. Provide a compatible Core image, then run:

@@ -38,7 +38,7 @@ for (const [name, browserType] of Object.entries({ chromium, firefox, webkit }))
     });
     const response = await page.goto(origin);
     expect(response?.status()).toBe(200);
-    expect(response?.headers()['cache-control']).toBe('no-store');
+    expect(response?.headers()['cache-control']).toBe('no-cache');
     expect(response?.headers()['content-security-policy']).toContain("script-src 'self'");
     expect(response?.headers()['strict-transport-security']).toContain('max-age=31536000');
     expect(await page.evaluate(() => isSecureContext && !!crypto.subtle)).toBe(true);

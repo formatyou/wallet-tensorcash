@@ -67,6 +67,16 @@ install dependencies automatically. Preserve the installed packages' license
 notices. Source and artifact hashes do not independently
 establish the identity or integrity of the installed dependencies or toolchain.
 
+## Code Verify pinned build files
+
+TensorCash Code Verify (integrity.tensorcash.org) rebuilds each tagged release
+from a recipe that pins `scripts/build.mjs`, `vite.config.ts` and
+`server/build.ts`. `scripts/code-verify-pins.json` records the SHA256 of those
+files as last reviewed, and `npm run verify-build` refuses a release tree whose
+pinned files differ from it. Before changing any of them: tell Code Verify,
+wait for their review, then update the pin file in the same commit as the
+change. Never deploy a release that fails this check.
+
 ## Gateway startup and release switching
 
 The gateway validates the manifest and source/artifact hashes before serving.
@@ -96,4 +106,7 @@ against independently obtained source/artifact hashes. It does not provide
 remote attestation, signed third-party build certification, independent proof of
 dependency identity, dependency integrity after installation, an honest host or
 toolchain, or a guarantee of reproducible artifact bytes. Independent review and
-trusted distribution remain necessary.
+trusted distribution remain necessary. For the hosted wallet, TensorCash Code
+Verify rebuilds tagged releases and publishes a signed manifest of the
+browser-served files that users can check with its browser extension; this
+covers `dist` only, not the gateway, `/api` responses, Core or the index.
