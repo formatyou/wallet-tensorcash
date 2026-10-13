@@ -176,6 +176,7 @@ test('real Worker: mandatory mnemonic backup, receive, encrypted export and clea
   await expect(page.getByRole('heading', { name: 'Keep it simple.' })).toBeVisible();
   await page.getByRole('button', { name: 'Receive', exact: true }).first().click();
   await expect(page.locator('.address-box')).toContainText('bcrt1q');
+  await expect(page.locator('.receive-bridge')).toHaveCount(0);
   const initialAddress = await page.locator('.address-box').innerText();
   await expect(page.getByRole('img', { name: 'QR code for your TensorCash receive address' })).toBeVisible();
   await page.getByRole('button', { name: 'New address', exact: true }).click();
@@ -610,4 +611,30 @@ test('overview stays compact and network details are available on demand at desk
   await details.locator('summary').focus();
   await page.keyboard.press('Enter');
   await expect(details).not.toHaveAttribute('open');
+});
+
+test('companion sites are linked on the landing page, in the footer of an open wallet and from mainnet Receive', async ({ page }) => {
+  await mockRegtest(page, false, false, 'mainnet');
+  await page.goto('/');
+  const beyond = page.getByRole('region', { name: 'Beyond the wallet' });
+  for (const [name, href] of [[/^bridge\.wallettensor\.cash/, 'https://bridge.wallettensor.cash/'], [/^tsc\.watch/, 'https://tsc.watch/']] as const) {
+    const link = beyond.getByRole('link', { name });
+    await expect(link).toBeVisible();
+    await expect(link).toHaveAttribute('href', href);
+    await expect(link).toHaveAttribute('target', '_blank');
+    await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  }
+  await restorePhrase(page);
+  await expect(beyond).toHaveCount(0);
+  const footer = page.getByRole('navigation', { name: 'TensorCash sites' });
+  await expect(footer.getByRole('link', { name: /^Bridge to Base/ })).toHaveAttribute('href', 'https://bridge.wallettensor.cash/');
+  await expect(footer.getByRole('link', { name: /^Network stats/ })).toHaveAttribute('href', 'https://tsc.watch/');
+  await page.getByRole('navigation', { name: 'Wallet sections' }).getByRole('button', { name: 'Receive', exact: true }).click();
+  await expect(page.locator('.address-box')).toContainText('tc1');
+  await expect(page.locator('.receive-bridge').getByRole('link', { name: /^bridge\.wallettensor\.cash/ })).toHaveAttribute('href', 'https://bridge.wallettensor.cash/');
+  for (const width of [1440, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect(footer.getByRole('link', { name: /^Network stats/ })).toBeVisible();
+  }
 });

@@ -45,6 +45,15 @@ for (const [name, browserType] of Object.entries({ chromium, firefox, webkit }))
     await expect(page.getByRole('heading', { name: 'A simple home for your TensorCash.', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: /^Create a wallet/ })).toBeVisible();
     await expect(page.getByRole('link', { name: /^Review the source/ })).toHaveAttribute('href', 'https://github.com/formatyou/wallet-tensorcash');
+    for (const [name, href] of [[/^bridge\.wallettensor\.cash/, 'https://bridge.wallettensor.cash/'], [/^tsc\.watch/, 'https://tsc.watch/']] as const) {
+      const link = page.getByRole('region', { name: 'Beyond the wallet' }).getByRole('link', { name });
+      await expect(link).toBeVisible();
+      await expect(link).toHaveAttribute('href', href);
+      await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    }
+    const footerLinks = page.getByRole('navigation', { name: 'TensorCash sites' });
+    await expect(footerLinks.getByRole('link', { name: /^Bridge to Base/ })).toHaveAttribute('href', 'https://bridge.wallettensor.cash/');
+    await expect(footerLinks.getByRole('link', { name: /^Network stats/ })).toHaveAttribute('href', 'https://tsc.watch/');
     const widths: number[] = [];
     for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 900 });
